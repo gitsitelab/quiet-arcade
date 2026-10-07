@@ -1,0 +1,427 @@
+    enemies.push(Object.assign({ type, x, y, r: t.r, hp: t.hp, flash: 0, age: 0 }, extra));
+  }
+  function clearWorld() {
+    shots = []; missiles = []; blasts = []; enemies = []; eShots = []; walls = []; pickups = [];
+    fireCd = 0; drag = null; lastTap = null; overTimer = 0; intro = 0;
+  }
+  function reset() {              // idle scene behind the menus
+    clearWorld();
+    makeStars();
+    player = newPlayer(); player.inv = 0;
+    missilesHeld = 1; shieldCharges = 0;
+    plan = []; planIdx = 0; planT = 0;
+    for (let i = 0; i < 5; i++) addEnemy('drifter', 60 + i * 60, 170, { baseX: 60 + i * 60, vy: 0, amp: 0, phase: 0 });
+    walls.push({ x: 0, y: 330, w: 140, h: 12 }, { x: 240, y: 330, w: 120, h: 12 });
+  }
+  function start() {
+    clearWorld();
+    player = newPlayer();
+    missilesHeld = 1; shieldCharges = 0;
+    pickupTimer = rand(12, 18);
+    shieldTimer = rand(16, 26);
+    beginWave();
+  }
+  function beginWave() {
+    plan = buildPlan(); planIdx = 0; planT = 0;
+    intro = INTRO_TIME;
+    showBanner('Wave ' + run.wave);
+  }
+
+  // A wave is a timed list of formations; later waves are longer and denser
+  function buildPlan() {
+    const w = run.wave, events = [], dur = 18 + 3 * Math.min(w, 8);
+    let t = 0.6, lastGate = -10;
+    while (t < dur) {
+      const r = Math.random();
+      let type;
+      if (t > 5 && t - lastGate > Math.max(3.5, 7 - w * 0.5) && r < 0.2 + 0.03 * Math.min(w, 6)) { type = 'gate'; lastGate = t; }
+      else if (r < 0.45) type = 'line';
+      else if (r < 0.65) type = 'column';
+      else if (r < 0.85) type = 'vee';
+      else type = 'turret';
+      events.push({ t, type });
+      t += Math.max(0.9, 2.2 - 0.12 * w) + rand(0, 0.6);
+    }
+    return events;
+  }
+  function spawnEvent(type) {
+    const w = run.wave;
+    if (type === 'line') {
+      for (let i = 0; i < 5; i++) { const x = 50 + i * 65; addEnemy('drifter', x, -20, { baseX: x, vy: 70 + 5 * w, amp: 0, phase: 0, fireT: rand(2, 5) }); }
+    } else if (type === 'column') {
+      const x = rand(50, LW - 50);
+      for (let i = 0; i < 4; i++) addEnemy('drifter', x, -20 - i * 36, { baseX: x, vy: 80 + 5 * w, amp: 34, phase: i * 0.6, fireT: rand(2, 5) });
+    } else if (type === 'vee') {
+      const cx = rand(90, LW - 90);
+      for (let i = -2; i <= 2; i++) addEnemy('diver', cx + i * 28, -20 - Math.abs(i) * 22, { state: 'enter', holdY: rand(90, 170), wait: 0.35, vx: 0, vy: 90 });
+    } else if (type === 'turret') {
+      const n = w >= 3 ? 2 : 1;
+      for (let i = 0; i < n; i++) addEnemy('turret', rand(50, LW - 50), -24 - i * 40, { targetY: rand(90, 170), vx: Math.random() < 0.5 ? -50 : 50, fireT: rand(0.8, 1.5), stay: 9 });
+    } else if (type === 'gate') {
+      const gap = Math.max(80, 124 - 4 * w), gx = rand(24, LW - 24 - gap);
+      walls.push({ x: 0, y: -20, w: gx, h: 12 }, { x: gx + gap, y: -20, w: LW - gx - gap, h: 12 });
+    }
+  }
+
+  /* ----- input: drag to steer (fires while held), double tap for a missile ----- */
+  function pointerDown(lx, ly) {
+    const now = performance.now();
+    if (lastTap && now - lastTap.t < DOUBLE_TAP_MS && Math.hypot(lx - lastTap.x, ly - lastTap.y) < 50) {
+      launchMissile(); lastTap = null;
+    } else lastTap = { t: now, x: lx, y: ly };
+    drag = { sx: lx, sy: ly, px: player.x, py: player.y };
+  }
+  function pointerMove(lx, ly) {
+    if (!drag || !player.alive) return;
+    player.x = clamp(drag.px + (lx - drag.sx) * DRAG_GAIN, PX_MIN, PX_MAX);
+    player.y = clamp(drag.py + (ly - drag.sy) * DRAG_GAIN, PY_MIN, PY_MAX);
+  }
+  function release() { drag = null; }
+  function keyDown(k, repeat) {
+    if (k === 'm' || k === 'M' || k === 'x' || k === 'X') { if (!repeat) launchMissile(); return true; }
+    return false;
+  }
+
+  function launchMissile() {
+    if (!player.alive || overTimer > 0) return;
+    if (missilesHeld <= 0) { sfx.empty(); return; }
+    missilesHeld--;
+    missiles.push({ x: player.x, y: player.y - 12, a: -Math.PI / 2, sp: 140, t: 0 });
+    sfx.missile();
+  }
+
+  /* ----- update ----- */
+  function scrollBg(dt, mul = 1) {
+    const v = scrollSpeed() * mul;
+    for (const s of stars) { s.y += v * s.speed * dt; if (s.y > LH) { s.y -= LH; s.x = rand(0, LW); } }
+    dashOff = (dashOff + v * 1.4 * dt) % 36;
+  }
+  function idle(dt) { if (!reduceMotion) scrollBg(dt, 0.5); }
+
+  function update(dt) {
+    scrollBg(dt);
+    if (overTimer > 0) { overTimer -= dt; moveWorld(dt); updateBlasts(dt); if (overTimer <= 0) endGame(); return; }
+    updatePlayer(dt);
+    updateShots(dt);
+    updateMissiles(dt);
+    updateBlasts(dt);
+    if (intro > 0) intro -= dt;
+    else {
+      planT += dt;
+      while (planIdx < plan.length && plan[planIdx].t <= planT) spawnEvent(plan[planIdx++].type);
+      pickupTimer -= dt;
+      if (pickupTimer <= 0) { pickups.push({ kind: 'missile', x: rand(40, LW - 40), y: -12 }); pickupTimer = rand(14, 22); }
+      shieldTimer -= dt;
+      if (shieldTimer <= 0) { pickups.push({ kind: 'shield', x: rand(40, LW - 40), y: -12 }); shieldTimer = rand(20, 30); }
+    }
+    moveWorld(dt);
+    collide();
+    if (intro <= 0 && planIdx >= plan.length && !enemies.length && !walls.length) {
+      run.wave++;
+      eShots = [];
+      beginWave();
+      sfx.wave();
+    }
+  }
+
+  function updatePlayer(dt) {
+    if (!player.alive) {
+      if (run.lives > 0) { player.respawn -= dt; if (player.respawn <= 0) player = newPlayer(); }
+      return;
+    }
+    player.inv = Math.max(0, player.inv - dt);
+    const dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0), dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+    if (dx || dy) {
+      player.x = clamp(player.x + dx * KEY_SPEED * dt, PX_MIN, PX_MAX);
+      player.y = clamp(player.y + dy * KEY_SPEED * dt, PY_MIN, PY_MAX);
+    }
+    fireCd -= dt;
+    if ((drag || keys.fire) && fireCd <= 0) {
+      shots.push({ x: player.x, y: player.y - 12 });
+      fireCd = FIRE_GAP;
+      sfx.shoot();
+    }
+  }
+
+  function updateShots(dt) {
+    for (let i = shots.length - 1; i >= 0; i--) {
+      shots[i].y -= SHOT_V * dt;
+      if (shots[i].y < -SHOT_LEN) shots.splice(i, 1);
+    }
+  }
+
+  function nearestEnemy(x, y) {
+    let best = null, bd = Infinity;
+    for (const e of enemies) {
+      if (e.y < 0) continue;
+      const d = (e.x - x) ** 2 + (e.y - y) ** 2;
+      if (d < bd) { bd = d; best = e; }
+    }
+    return best;
+  }
+  function updateMissiles(dt) {
+    for (let i = missiles.length - 1; i >= 0; i--) {
+      const m = missiles[i];
+      m.t += dt;
+      const target = nearestEnemy(m.x, m.y);
+      if (target) {                               // steer toward the closest enemy
+        let diff = Math.atan2(target.y - m.y, target.x - m.x) - m.a;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        m.a += clamp(diff, -5 * dt, 5 * dt);
+      }
+      m.sp = Math.min(400, m.sp + 520 * dt);
+      m.x += Math.cos(m.a) * m.sp * dt;
+      m.y += Math.sin(m.a) * m.sp * dt;
+      if (!reduceMotion) fx.particles.push({ x: m.x, y: m.y, vx: 0, vy: 0, life: 0.25, max: 0.25, size: 2, color: theme.accent });
+      const hit = enemies.some(e => (e.x - m.x) ** 2 + (e.y - m.y) ** 2 < (e.r + 6) ** 2);
+      if (hit || m.t > 2.4 || m.y < -20 || m.x < -20 || m.x > LW + 20) { explode(m.x, m.y); missiles.splice(i, 1); }
+    }
+  }
+  function explode(x, y) {
+    blasts.push({ x, y, t: 0, max: 0.35 });
+    sfx.boom();
+    burst(x, y, theme.accent, 16);
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      const e = enemies[i];
+      if ((e.x - x) ** 2 + (e.y - y) ** 2 < (BLAST_R + e.r) ** 2) damage(i, 6);
+    }
+    eShots = eShots.filter(s => (s.x - x) ** 2 + (s.y - y) ** 2 > BLAST_R * BLAST_R);
+  }
+  function updateBlasts(dt) {
+    for (let i = blasts.length - 1; i >= 0; i--) { blasts[i].t += dt; if (blasts[i].t >= blasts[i].max) blasts.splice(i, 1); }
+  }
+
+  function enemyShoot(e, aimed) {
+    const v = 150 + 8 * run.wave;
+    if (aimed && player.alive) {
+      const a = Math.atan2(player.y - e.y, player.x - e.x) + rand(-0.12, 0.12);
+      eShots.push({ x: e.x, y: e.y + e.r, vx: Math.cos(a) * v, vy: Math.sin(a) * v });
+    } else eShots.push({ x: e.x, y: e.y + e.r, vx: 0, vy: v });
+  }
+
+  function moveWorld(dt) {
+    const w = run.wave, sv = scrollSpeed();
+    for (let i = enemies.length - 1; i >= 0; i--) {
+      const e = enemies[i];
+      e.age += dt;
+      e.flash = Math.max(0, e.flash - dt);
+      if (e.type === 'drifter') {
+        e.y += e.vy * dt;
+        e.x = e.baseX + Math.sin(e.age * 2 + e.phase) * e.amp;
+        if (w >= 2 && e.y > 0) { e.fireT -= dt; if (e.fireT <= 0) { e.fireT = rand(3, 6); enemyShoot(e, false); } }
+      } else if (e.type === 'diver') {
+        if (e.state === 'enter') { e.y += e.vy * dt; if (e.y >= e.holdY) e.state = 'hold'; }
+        else if (e.state === 'hold') {
+          e.wait -= dt;
+          if (e.wait <= 0) {                     // lock on to where the ship is now, then commit
+            const a = Math.atan2(player.y - e.y, player.x - e.x), v = Math.min(330, 230 + 10 * w);
+            e.vx = Math.cos(a) * v; e.vy = Math.max(80, Math.sin(a) * v); e.state = 'dive';
+          }
+        } else { e.x += e.vx * dt; e.y += e.vy * dt; }
+      } else if (e.type === 'turret') {
+        if (e.y < e.targetY && e.stay > 0) e.y += 60 * dt;
+        else {
+          e.stay -= dt;
+          if (e.stay <= 0) e.y += 55 * dt;       // leaves after a while
+          e.x += e.vx * dt;
+          if (e.x < 30 || e.x > LW - 30) { e.vx = -e.vx; e.x = clamp(e.x, 30, LW - 30); }
+          e.fireT -= dt;
+          if (e.fireT <= 0) { e.fireT = rand(1.2, 2) * Math.max(0.5, 1 - 0.06 * w); enemyShoot(e, true); }
+        }
+      }
+      if (e.y > LH + 30) { enemies.splice(i, 1); resetCombo(); }        // slipped past you
+      else if (e.x < -40 || e.x > LW + 40) enemies.splice(i, 1);
+    }
+    for (let i = eShots.length - 1; i >= 0; i--) {
+      const s = eShots[i];
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      if (s.y > LH + 10 || s.y < -10 || s.x < -10 || s.x > LW + 10) eShots.splice(i, 1);
+    }
+    for (let i = walls.length - 1; i >= 0; i--) { walls[i].y += sv * dt; if (walls[i].y > LH + 20) walls.splice(i, 1); }
+    for (let i = pickups.length - 1; i >= 0; i--) { pickups[i].y += sv * 0.8 * dt; if (pickups[i].y > LH + 20) pickups.splice(i, 1); }
+  }
+
+  function damage(i, n) {
+    const e = enemies[i], t = TYPES[e.type];
+    e.hp -= n; e.flash = 0.1;
+    if (e.hp > 0) { sfx.tick(); return; }
+    enemies.splice(i, 1);
+    registerHit(t.pts, e.x, e.y, theme.text, false, e.type === 'turret' ? 18 : 12);
+    sfx.hit(run.mult);
+    if (Math.random() < (e.type === 'turret' ? 0.5 : 0.03)) pickups.push({ kind: Math.random() < 0.5 ? 'shield' : 'missile', x: e.x, y: e.y });
+  }
+
+  function circleRect(x, y, r, w) {
+    const cx = clamp(x, w.x, w.x + w.w), cy = clamp(y, w.y, w.y + w.h);
+    return (x - cx) ** 2 + (y - cy) ** 2 < r * r;
+  }
+
+  function hitPlayer() {
+    if (shieldCharges > 0) {                  // a shield layer takes the hit instead
+      shieldCharges--;
+      player.inv = 0.9;
+      burst(player.x, player.y, theme.blue, 14);
+      blasts.push({ x: player.x, y: player.y, t: 0, max: 0.35, r: 32, color: theme.blue });
+      sfx.shieldHit();
+      return;
+    }
+    run.lives = Math.max(0, run.lives - 1);
+    player.alive = false; player.respawn = 1.0;
+    eShots = [];
+    drag = null;
+    resetCombo();
+    burst(player.x, player.y, theme.accent, 24);
+    shakeScreen();
+    sfx.playerHit();
+    updateHud();
+    if (run.lives <= 0) overTimer = 1.2;
+  }
+
+  function collide() {
+    // player shots: walls block them, enemies take damage
+    outer:
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const s = shots[i];
+      for (const w of walls) if (s.x >= w.x && s.x <= w.x + w.w && s.y <= w.y + w.h && s.y + SHOT_LEN >= w.y) { shots.splice(i, 1); continue outer; }
+      for (let j = enemies.length - 1; j >= 0; j--) {
+        const e = enemies[j];
+        if (Math.abs(s.x - e.x) <= e.r + 2 && s.y <= e.y + e.r && s.y + SHOT_LEN >= e.y - e.r) {
+          shots.splice(i, 1);
+          damage(j, 1);
+          continue outer;
+        }
+      }
+    }
+    if (!player.alive) return;
+    // pickups: orange = one more missile (up to 3), blue = one shield layer (up to 2)
+    for (let i = pickups.length - 1; i >= 0; i--) {
+      const k = pickups[i];
+      if ((k.x - player.x) ** 2 + (k.y - player.y) ** 2 < 18 * 18) {
+        pickups.splice(i, 1);
+        addScore(50); updateHud();
+        if (k.kind === 'shield') {
+          if (shieldCharges < MAX_SHIELDS) shieldCharges++;
+          addFloater(k.x, k.y - 14, '+1 shield', theme.blue);
+          sfx.shieldUp();
+        } else {
+          if (missilesHeld < MAX_MISSILES) missilesHeld++;
+          addFloater(k.x, k.y - 14, '+1 missile', theme.accent);
+          sfx.pickup();
+        }
+      }
+    }
+    if (player.inv > 0 || overTimer > 0) return;
+    for (const w of walls) if (circleRect(player.x, player.y, PLAYER_R, w)) { hitPlayer(); return; }
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      if ((e.x - player.x) ** 2 + (e.y - player.y) ** 2 < (e.r + PLAYER_R) ** 2) {
+        enemies.splice(j, 1);
+        burst(e.x, e.y, theme.text, 12);
+        hitPlayer();
+        return;
+      }
+    }
+    for (const s of eShots) if ((s.x - player.x) ** 2 + (s.y - player.y) ** 2 < (PLAYER_R + 2) ** 2) { hitPlayer(); return; }
+  }
+
+  /* ----- draw ----- */
+  function missileIcon(x, y) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 6); ctx.lineTo(x + 2.5, y - 2); ctx.lineTo(x + 2.5, y + 5);
+    ctx.lineTo(x - 2.5, y + 5); ctx.lineTo(x - 2.5, y - 2); ctx.closePath(); ctx.fill();
+  }
+  function draw() {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, LW, LH); ctx.clip();
+
+    // motion cues: drifting dots and edge dashes
+    ctx.fillStyle = theme.border;
+    for (const s of stars) ctx.fillRect(s.x, s.y, s.size, s.size);
+    for (let y = dashOff - 36; y < LH; y += 36) { ctx.fillRect(4, y, 1.5, 14); ctx.fillRect(LW - 5.5, y, 1.5, 14); }
+
+    ctx.fillStyle = theme.muted;
+    for (const w of walls) ctx.fillRect(w.x, w.y, w.w, w.h);
+
+    for (const k of pickups) {
+      if (k.kind === 'shield') {               // soft blue orb
+        const g = ctx.createRadialGradient(k.x - 2, k.y - 3, 1, k.x, k.y, 10);
+        g.addColorStop(0, hexA(theme.blue, 0.15));
+        g.addColorStop(0.65, hexA(theme.blue, 0.35));
+        g.addColorStop(1, hexA(theme.blue, 0.8));
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(k.x, k.y, 10, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = theme.blue; ctx.lineWidth = 1.25; ctx.stroke();
+      } else {
+        ctx.strokeStyle = theme.accent; ctx.fillStyle = theme.accent; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(k.x, k.y, 9, 0, Math.PI * 2); ctx.stroke();
+        missileIcon(k.x, k.y);
+      }
+    }
+
+    for (const e of enemies) {
+      ctx.fillStyle = e.flash > 0 ? theme.muted : theme.text;
+      drawShape(TYPES[e.type].shape, e.x, e.y, e.r * 2);
+    }
+    ctx.fillStyle = theme.text;
+    for (const s of eShots) ctx.fillRect(s.x - 1.5, s.y - 4, 3, 8);
+
+    ctx.fillStyle = theme.accent;
+    for (const s of shots) ctx.fillRect(s.x - 1.25, s.y, 2.5, SHOT_LEN);
+    for (const m of missiles) {
+      ctx.save(); ctx.translate(m.x, m.y); ctx.rotate(m.a + Math.PI / 2);
+      missileIcon(0, 0);
+      ctx.restore();
+    }
+    for (const b of blasts) {
+      const p = b.t / b.max;
+      const br = b.r || BLAST_R, bc = b.color || theme.accent;
+      if (reduceMotion) { ctx.globalAlpha = 0.25; ctx.fillStyle = bc; ctx.beginPath(); ctx.arc(b.x, b.y, br, 0, Math.PI * 2); ctx.fill(); }
+      else {
+        ctx.globalAlpha = 1 - p; ctx.strokeStyle = bc; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(b.x, b.y, br * (0.3 + 0.7 * p), 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    if (player.alive && !(player.inv > 0 && !reduceMotion && Math.floor(player.inv * 12) % 2)) {
+      if (player.inv > 0) ctx.globalAlpha = 0.45;
+      ctx.fillStyle = theme.accent;
+      shipPath(player.x, player.y); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (player.alive && shieldCharges > 0) {  // soft bubble: clear centre, blue towards the edge
+      const breathe = reduceMotion ? 0 : Math.sin(performance.now() / 420) * 0.8;
+      const R = 18 + (shieldCharges - 1) * 4 + breathe, cx = player.x, cy = player.y + 1;
+      const g = ctx.createRadialGradient(cx, cy - 3, R * 0.25, cx, cy, R);
+      g.addColorStop(0, hexA(theme.blue, 0));
+      g.addColorStop(0.6, hexA(theme.blue, 0.06 + 0.05 * shieldCharges));
+      g.addColorStop(1, hexA(theme.blue, 0.42));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = 1.25;
+      ctx.strokeStyle = hexA(theme.blue, 0.9); ctx.stroke();
+      if (shieldCharges > 1) {                 // second layer: a fainter inner ring
+        ctx.strokeStyle = hexA(theme.blue, 0.45);
+        ctx.beginPath(); ctx.arc(cx, cy, R - 4, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    // top left: missile slots (orange = ready), then shield slots (blue = active)
+    for (let i = 0; i < MAX_MISSILES; i++) {
+      ctx.fillStyle = i < missilesHeld ? theme.accent : theme.border;
+      missileIcon(18 + i * 12, 18);
+    }
+    for (let i = 0; i < MAX_SHIELDS; i++) {
+      ctx.fillStyle = i < shieldCharges ? theme.blue : theme.border;
+      ctx.beginPath(); ctx.arc(68 + i * 12, 18, 4.5, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  return {
+    id: 'headway', name: 'Upstream', hiKey: 'headway.highScore',   // id/key kept so saved best scores stay
+    howTo: 'Drag to steer through each wave while your ship fires; double tap for a missile, and catch blue rings for shields.',
+    keysHint: 'Keyboard: arrow keys to move, space to fire, M to launch a missile, P to pause.',
+    overText: best => best ? 'A new best score. That was a long way forward.' : 'The waves caught up with you this time.',
+    bannerY: 300, extraLifeEvery: 15000, touchAnywhere: true,
