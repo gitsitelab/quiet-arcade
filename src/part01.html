@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Quiet Arcade">
+<meta name="theme-color" content="#141413" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
+<title>Quiet Arcade</title>
+<meta name="description" content="Four small arcade games for your phone: Drift Defense, Fracture Field, Layline and Upstream.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
+<style>
+  /* ---------- Theme tokens ---------- */
+  :root {
+    --bg: #F5F4ED; --surface: #FAF9F5; --border: #E8E6DC;
+    --text: #141413; --muted: #6B6A65; --accent: #D97757;
+    --blue: #6A9BCC;
+    --scrim: rgba(245, 244, 237, 0.72);
+    --serif: "Source Serif 4", Georgia, serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    --sans: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    color-scheme: light dark;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--bg);
+  }
+  /* no saved choice: follow the phone; a saved choice sets data-theme */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+      --bg: #262624; --surface: #30302E; --border: #3E3E38;
+      --text: #F5F4ED; --muted: #A6A39A; --scrim: rgba(38, 38, 36, 0.74);
+    }
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] {
+    --bg: #262624; --surface: #30302E; --border: #3E3E38;
+    --text: #F5F4ED; --muted: #A6A39A; --scrim: rgba(38, 38, 36, 0.74);
+    color-scheme: dark;
+  }
+  :root[data-theme="night"] {
+    --bg: #141413; --surface: #1C1C1A; --border: #2C2B28;
+    --text: #ECEAE3; --muted: #959189; --scrim: rgba(20, 20, 19, 0.78);
+    color-scheme: dark;
+  }
+
+  /* ---------- Page: no scroll, no zoom, no selection ---------- */
+  *, *::before, *::after { box-sizing: border-box; }
+  html { height: 100%; scroll-padding-top: env(safe-area-inset-top, 0px); }
+  html, body {
+    margin: 0; overflow: hidden;
+    overscroll-behavior: none; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+  body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
+  .ic-text { fill: var(--text); }
+  .ic-accent { fill: var(--accent); }
+
+  #app {
+    height: 100%; display: flex; flex-direction: column;
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  #app.is-hub #topbar { display: none; }
+
+  /* ---------- Top bar ---------- */
+  #topbar {
+    flex: 0 0 auto; height: 60px;
+    display: flex; align-items: center; gap: 20px;
+    padding: 0 10px 0 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .label { font: 500 12px/1.2 var(--sans); color: var(--muted); }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  #score { font-size: 19px; font-weight: 600; line-height: 1.15; }
+  #combo { font-size: 19px; line-height: 1.15; color: var(--muted); }
+  #combo.on { color: var(--accent); font-weight: 600; }
+  .spacer { flex: 1; }
+  #lives { display: flex; gap: 6px; align-items: center; }
+  #lives svg { width: 18px; height: 13px; display: block; }
+  #lives[hidden] { display: none; }
+  .iconbtn {
+    width: 44px; height: 44px; flex: 0 0 44px; padding: 0;
+    display: grid; place-items: center;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--surface); color: var(--text); cursor: pointer;
+  }
+  .iconbtn:disabled { opacity: 0.35; cursor: default; }
+
+  /* ---------- Stage + canvas ---------- */
+  #stage { position: relative; flex: 1 1 auto; min-height: 0; }
+  #game { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* ---------- Screens ---------- */
+  .overlay {
+    position: absolute; inset: 0; padding: 20px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--scrim);
+  }
+  .overlay[hidden], .card[hidden] { display: none; }
+  .card {
+    width: min(330px, 100%);
+    display: flex; flex-direction: column; text-align: center;
+    padding: 28px 22px 18px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  }
+  .card h1 { font: 600 30px/1.15 var(--serif); letter-spacing: -0.01em; margin: 0 0 10px; }
+  .card p { font: 400 17px/1.5 var(--serif); color: var(--muted); margin: 0 0 18px; }
+  .stats { font-size: 14px; line-height: 1.6; color: var(--muted); margin: 0 0 20px; }
+  .stats strong { color: var(--text); font-weight: 600; }
+  .primary {
+    height: 50px; border: 0; border-radius: 12px;
+    background: var(--accent); color: #FFFFFF;
+    font: 600 17px var(--sans); cursor: pointer;
+  }
+  .primary:active { opacity: 0.85; }
+  .toggle {
+    margin-top: 10px; height: 44px;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: transparent; color: var(--muted);
+    font: 500 15px var(--sans); cursor: pointer;
+  }
+  .ghost {
+    margin-top: 4px; height: 44px; border: 0; background: transparent;
+    color: var(--muted); font: 500 15px var(--sans); cursor: pointer;
+  }
+  .hint { display: none; }
+  .card p.hint { font: 400 12px/1.5 var(--sans); margin: 8px 0 0; }
+  @media (hover: hover) and (pointer: fine) { .card p.hint { display: block; } }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- Score tables ---------- */
+  .scores { list-style: none; margin: 0 0 20px; padding: 0; }
+  .scores li {
+    display: grid; grid-template-columns: 2ch 3.5ch 1fr; gap: 14px; align-items: baseline;
+    padding: 7px 6px; border-bottom: 1px solid var(--border);
+    font: 400 15px/1.2 var(--mono); color: var(--muted); text-align: left;
+  }
+  .scores li:last-child { border-bottom: 0; }
+  .scores .who, .scores .pts { color: var(--text); }
+  .scores .pts { text-align: right; font-variant-numeric: tabular-nums; }
+  .scores li.me .who, .scores li.me .pts { color: var(--accent); font-weight: 600; }
+  .scores li.empty { display: block; text-align: center; border: 0; font: 400 14px/1.4 var(--sans); }
+
+  /* ---------- Three-letter name picker ---------- */
+  .initials { display: flex; justify-content: center; gap: 14px; margin: 0 0 22px; }
+  .slot { display: flex; flex-direction: column; align-items: center; }
+  .slot .arrow {
+    width: 52px; height: 44px; padding: 0; border: 0; background: transparent;
+    color: var(--muted); display: grid; place-items: center; cursor: pointer;
+  }
+  .slot .letter {
+    width: 52px; padding: 4px 0 6px; border: 0; border-bottom: 2px solid var(--border);
+    background: transparent; color: var(--text); font: 600 36px/1 var(--mono); cursor: pointer;
+  }
+  .slot.on .letter { border-bottom-color: var(--accent); }
+
+  /* ---------- Settings: sound, music, theme ---------- */
+  .settings { display: flex; gap: 8px; margin-top: 10px; }
+  .settings .toggle { flex: 1; margin-top: 0; }
+  .seg {
+    display: flex; gap: 3px; padding: 3px; margin-top: 8px;
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+  .seg button {
+    flex: 1; height: 38px; border: 0; border-radius: 9px;
+    background: transparent; color: var(--muted);
+    font: 500 15px var(--sans); cursor: pointer;
+  }
+  .seg button[aria-checked="true"] { background: var(--border); color: var(--text); }
+
+  /* ---------- Game picker ---------- */
+  .choices { display: flex; flex-direction: column; gap: 10px; }
+  .choice {
+    display: grid; grid-template-columns: 40px 1fr; column-gap: 14px; align-items: center;
+    text-align: left; padding: 12px 14px; min-height: 44px;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--bg); color: var(--text); cursor: pointer;
+  }
+  .choice:active { border-color: var(--accent); }
+  .choice svg { grid-row: 1 / 4; width: 40px; height: 40px; }
+  .cname { font: 600 19px/1.2 var(--serif); }
+  .cdesc { font: 400 14px/1.35 var(--sans); color: var(--muted); margin-top: 2px; }
+  .cbest { font: 400 13px/1.4 var(--mono); color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="app" class="is-hub">
+  <header id="topbar">
+    <div class="stat"><span class="label">Score</span><span id="score" class="num">0</span></div>
+    <div class="stat"><span class="label">Combo</span><span id="combo" class="num">×1</span></div>
+    <div class="spacer"></div>
+    <div id="lives" role="img" aria-label="3 lives"></div>
+    <button id="pauseBtn" class="iconbtn" type="button" aria-label="Pause"></button>
+  </header>
+
+  <main id="stage">
+    <canvas id="game" aria-label="Play area"></canvas>
+
+    <div id="overlay" class="overlay">
+      <!-- game picker -->
+      <section class="card" data-screen="hub">
+        <h1>Quiet Arcade</h1>
+        <p>Pick a game to play; your best scores stay on this device.</p>
+        <div class="choices">
+          <button class="choice" data-game="drift" type="button">
+            <svg viewBox="0 0 40 40" aria-hidden="true">
+              <path class="ic-text" d="M4 7 L14 7 L9 15 Z"/>
+              <circle class="ic-text" cx="20" cy="11" r="4.5"/>
+              <rect class="ic-text" x="27" y="7" width="8.5" height="8.5"/>
+              <path class="ic-accent" d="M20 25 L28 36 L22.5 33.5 L17.5 33.5 L12 36 Z"/>
+            </svg>
+            <span class="cname">Drift Defense</span>
+            <span class="cdesc">Hold the line against a formation that steps closer.</span>
+            <span class="cbest" id="best-drift">Best 0</span>
+          </button>
+          <button class="choice" data-game="fracture" type="button">
+            <svg viewBox="0 0 40 40" aria-hidden="true">
+              <path class="ic-text" d="M14 4 L25 3 L33 10 L32 20 L24 25 L13 23 L8 14 Z"/>
+              <path class="ic-text" d="M31 27 L36 27 L38 32 L34 36 L30 33 Z"/>
+              <path class="ic-accent" transform="translate(12 32) rotate(-35)" d="M0 -6 L8 5 L2.5 2.5 L-2.5 2.5 L-8 5 Z"/>
+            </svg>
+            <span class="cname">Fracture Field</span>
+            <span class="cdesc">Break drifting rocks into smaller pieces before they hit you.</span>
+            <span class="cbest" id="best-fracture">Best 0</span>
+          </button>
+          <button class="choice" data-game="layline" type="button">
+            <svg viewBox="0 0 40 40" aria-hidden="true">
+              <path class="ic-accent" d="M14 3 H21 V10 H28 V17 H14 Z"/>
+              <path class="ic-text" d="M4 23 H18 V30 H25 V23 H36 V37 H4 Z"/>
+            </svg>
+            <span class="cname">Layline</span>
+            <span class="cdesc">Fit falling pieces together and clear full rows.</span>
+            <span class="cbest" id="best-layline">Best 0</span>
+          </button>
+          <button class="choice" data-game="headway" type="button">
+            <svg viewBox="0 0 40 40" aria-hidden="true">
+              <circle class="ic-text" cx="10" cy="8" r="4"/>
+              <circle class="ic-text" cx="30" cy="8" r="4"/>
+              <path class="ic-text" d="M16 14 L24 14 L20 21 Z"/>
+              <rect class="ic-text" x="2" y="22" width="10" height="2.5"/>
+              <rect class="ic-text" x="28" y="22" width="10" height="2.5"/>
+              <path class="ic-accent" d="M20 26 L28 37 L22.5 34.5 L17.5 34.5 L12 37 Z"/>
+            </svg>
+            <span class="cname">Upstream</span>
+            <span class="cdesc">Push forward through incoming waves, weave past barriers, and pick up missiles and shields.</span>
+            <span class="cbest" id="best-headway">Best 0</span>
+          </button>
+        </div>
+        <div class="settings"><button class="toggle" data-mute type="button">Sound on</button><button class="toggle" data-music type="button">Music on</button></div>
+        <div class="seg" role="radiogroup" aria-label="Colour theme">
+          <button type="button" role="radio" data-theme-choice="light">Light</button>
+          <button type="button" role="radio" data-theme-choice="dark">Dark</button>
+          <button type="button" role="radio" data-theme-choice="night">Night</button>
+        </div>
+      </section>
+
+      <!-- per-game start -->
+      <section class="card" data-screen="start" hidden>
+        <h1 id="startTitle"></h1>
+        <p id="startText"></p>
+        <ol class="scores" id="startTable" aria-label="Top scores"></ol>
+        <button class="primary" id="playBtn" type="button">Play</button>
+        <div class="settings"><button class="toggle" data-mute type="button">Sound on</button><button class="toggle" data-music type="button">Music on</button></div>
+        <button class="ghost" data-hub type="button">All games</button>
+        <p class="hint" id="startHint"></p>
+      </section>
+
+      <section class="card" data-screen="pause" hidden>
+        <h1>Paused</h1>
+        <p>Everything holds still until you come back.</p>
+        <div class="stats num" id="pauseStats"></div>
+        <button class="primary" id="resumeBtn" type="button">Resume</button>
+        <div class="settings"><button class="toggle" data-mute type="button">Sound on</button><button class="toggle" data-music type="button">Music on</button></div>
+        <button class="ghost" data-hub type="button">Quit to all games</button>
+      </section>
+
+      <section class="card" data-screen="name" hidden>
+        <h1>New high score</h1>
+        <p>Pick three letters to put your name on the score table.</p>
+        <div class="stats num" id="nameScore"></div>
+        <div class="initials" id="initials">
+          <div class="slot" data-i="0">
+            <button class="arrow" type="button" data-step="1" aria-label="Next letter for position 1"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 11.5 L9 6.5 L14 11.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="letter" type="button" aria-label="Letter 1">A</button>
+            <button class="arrow" type="button" data-step="-1" aria-label="Previous letter for position 1"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 6.5 L9 11.5 L14 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+          <div class="slot" data-i="1">
+            <button class="arrow" type="button" data-step="1" aria-label="Next letter for position 2"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 11.5 L9 6.5 L14 11.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="letter" type="button" aria-label="Letter 2">A</button>
+            <button class="arrow" type="button" data-step="-1" aria-label="Previous letter for position 2"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 6.5 L9 11.5 L14 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+          <div class="slot" data-i="2">
+            <button class="arrow" type="button" data-step="1" aria-label="Next letter for position 3"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 11.5 L9 6.5 L14 11.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="letter" type="button" aria-label="Letter 3">A</button>
+            <button class="arrow" type="button" data-step="-1" aria-label="Previous letter for position 3"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M4 6.5 L9 11.5 L14 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          </div>
+        </div>
+        <button class="primary" id="saveNameBtn" type="button">Save score</button>
+        <button class="ghost" id="skipNameBtn" type="button">Skip</button>
+      </section>
+
+      <section class="card" data-screen="over" hidden>
+        <h1>Game over</h1>
+        <p id="overText"></p>
+        <div class="stats num" id="overStats"></div>
+        <ol class="scores" id="overTable" aria-label="Top scores"></ol>
+        <button class="primary" id="againBtn" type="button">Play again</button>
+        <button class="ghost" data-hub type="button">All games</button>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* =====================================================================
+   SHARED CONFIG + HELPERS
+   ===================================================================== */
+const LW = 360, LH = 640;                 // fixed logical play area
+const INTRO_TIME = 1.3, BANNER_TIME = 1.8;
+const KEY_MUTE = 'quietArcade.muted', KEY_LAST = 'quietArcade.lastGame';
+const FONT_SERIF = '"Source Serif 4", Georgia, serif';
+const FONT_MONO = '"JetBrains Mono", ui-monospace, Menlo, monospace';
+const SHIP_SVG = '<svg viewBox="-13 -10 26 18" aria-hidden="true"><path class="ic-accent" d="M0 -10 L13 8 L4 4 L-4 4 L-13 8 Z"/></svg>';
