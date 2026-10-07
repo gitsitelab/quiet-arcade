@@ -1,0 +1,434 @@
+      if (seekerTimer <= 0 && rocks.length) {
+        const dir = Math.random() < 0.5 ? 1 : -1;
+        seeker = { x: dir > 0 ? -16 : LW + 16, y: 0, baseY: rand(80, LH - 120), t: 0, dir, fire: 1.2 };
+        sfx.seeker();
+      }
+      return;
+    }
+    seeker.t += dt;
+    seeker.x += seeker.dir * 65 * dt;
+    seeker.y = seeker.baseY + Math.sin(seeker.t * 1.6) * 30;
+    seeker.fire -= dt;
+    if (seeker.fire <= 0 && ship.alive) {
+      seeker.fire = rand(1.1, 1.8);
+      const a = Math.atan2(wrapD(ship.y - seeker.y, LH), wrapD(ship.x - seeker.x, LW)) + rand(-0.25, 0.25);
+      sShots.push({ x: seeker.x, y: seeker.y, vx: Math.cos(a) * 170, vy: Math.sin(a) * 170, life: 2.4 });
+    }
+    if (seeker.x < -24 || seeker.x > LW + 24) { seeker = null; seekerTimer = rand(16, 26); }
+  }
+
+  function splitRock(j) {
+    const r = rocks[j];
+    rocks.splice(j, 1);
+    if (r.size > 1) {
+      const base = Math.atan2(r.vy, r.vx);
+      for (const k of [-1, 1]) rocks.push(makeRock(r.size - 1, r.x, r.y, base + k * rand(0.4, 1.1)));
+    }
+  }
+
+  function killShip() {
+    run.lives = Math.max(0, run.lives - 1);
+    ship.alive = false; ship.respawn = 1.4;
+    sShots = [];
+    resetCombo();
+    burst(ship.x, ship.y, theme.accent, 24);
+    shakeScreen();
+    sfx.playerHit();
+    updateHud();
+    if (run.lives <= 0) overTimer = 1.4;
+  }
+
+  function collide() {
+    outer:
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const s = shots[i];
+      for (let j = rocks.length - 1; j >= 0; j--) {
+        const r = rocks[j];
+        if (dist2(s, r) < r.r * r.r) {
+          shots.splice(i, 1);
+          registerHit(ROCK_PTS[r.size], r.x, r.y, theme.text, false, 4 + r.size * 4);
+          sfx.rock(r.size);
+          splitRock(j);
+          continue outer;
+        }
+      }
+      if (seeker && dist2(s, seeker) < 15 * 15) {
+        shots.splice(i, 1);
+        registerHit(SEEKER_PTS, seeker.x, seeker.y, theme.accent, true, 18);
+        sfx.bonus();
+        seeker = null; seekerTimer = rand(16, 26);
+      }
+    }
+    if (!ship.alive || ship.inv > 0 || overTimer > 0) return;
+    for (let j = rocks.length - 1; j >= 0; j--) {
+      const r = rocks[j], rr = r.r * 0.85 + SHIP_R;
+      if (dist2(ship, r) < rr * rr) {
+        burst(r.x, r.y, theme.text, 4 + r.size * 4);
+        splitRock(j);
+        killShip();
+        return;
+      }
+    }
+    if (seeker && dist2(ship, seeker) < (14 + SHIP_R) ** 2) {
+      burst(seeker.x, seeker.y, theme.text, 12);
+      seeker = null; seekerTimer = rand(16, 26);
+      killShip();
+      return;
+    }
+    for (const s of sShots) {
+      if (dist2(ship, s) < (SHIP_R + 2) ** 2) { killShip(); return; }
+    }
+  }
+
+  /* ----- draw ----- */
+  function drawWrapped(x, y, r, fn) {           // draw copies across wrapping edges
+    const xs = [x], ys = [y];
+    if (x < r) xs.push(x + LW); else if (x > LW - r) xs.push(x - LW);
+    if (y < r) ys.push(y + LH); else if (y > LH - r) ys.push(y - LH);
+    for (const xx of xs) for (const yy of ys) fn(xx, yy);
+  }
+  function rockPath(r, x, y) {
+    const n = r.pts.length;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const a = r.rot + i / n * Math.PI * 2, d = r.r * r.pts[i];
+      const px = x + Math.cos(a) * d, py = y + Math.sin(a) * d;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+  function draw() {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, LW, LH); ctx.clip();
+
+    ctx.fillStyle = theme.text;
+    for (const r of rocks) drawWrapped(r.x, r.y, r.r, (x, y) => rockPath(r, x, y));
+
+    if (seeker) {                                // flat hexagon with an accent core
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = i / 6 * Math.PI * 2;
+        const px = seeker.x + Math.cos(a) * 13, py = seeker.y + Math.sin(a) * 8;
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = theme.accent;
+      ctx.beginPath(); ctx.arc(seeker.x, seeker.y, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = theme.text;
+    }
+    for (const s of sShots) ctx.fillRect(s.x - 1.5, s.y - 1.5, 3, 3);
+
+    ctx.fillStyle = theme.accent;
+    for (const s of shots) { ctx.beginPath(); ctx.arc(s.x, s.y, 1.8, 0, Math.PI * 2); ctx.fill(); }
+
+    if (ship.alive && !(ship.inv > 0 && !reduceMotion && Math.floor(ship.inv * 12) % 2)) {
+      if (ship.inv > 0) ctx.globalAlpha = 0.45;
+      drawWrapped(ship.x, ship.y, 14, (x, y) => {
+        ctx.save();
+        ctx.translate(x, y); ctx.rotate(ship.a);
+        shipPath(0, 0); ctx.fill();
+        if (ship.thrust > 0) {
+          const len = 4 + ship.thrust * 6 + (reduceMotion ? 0 : rand(0, 3));
+          ctx.beginPath(); ctx.moveTo(-2.5, 5); ctx.lineTo(2.5, 5); ctx.lineTo(0, 5 + len); ctx.closePath(); ctx.fill();
+        }
+        ctx.restore();
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    if (stick && shell.mode === 'play') {        // joystick guide: inner ring aims, outer ring thrusts
+      ctx.lineWidth = 1 / view.scale;
+      ctx.strokeStyle = theme.border;
+      ctx.beginPath(); ctx.arc(stick.ox, stick.oy, STICK_AIM, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(stick.ox, stick.oy, STICK_MAX, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = theme.muted;
+      ctx.beginPath(); ctx.arc(stick.ox + stick.dx, stick.oy + stick.dy, 6, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  return {
+    id: 'fracture', name: 'Fracture Field', hiKey: 'fractureField.highScore',
+    howTo: 'Touch the lower half and drag a little to aim or further to thrust; your ship fires while your finger is down.',
+    keysHint: 'Keyboard: left and right to turn, up to thrust, space to fire, P to pause.',
+    overText: best => best ? 'A new best score before the field closed in.' : 'The field closed in this time.',
+    bannerY: 300, extraLifeEvery: 10000,
+    reset, start, idle, update, draw, pointerDown, pointerMove, release
+  };
+})();
+
+/* =====================================================================
+   GAME 3 — LAYLINE (falling blocks, clear full rows)
+   ===================================================================== */
+const Layline = (() => {
+  const BW = 10, BH = 20, CELL = 26;
+  const BX = 12, BY = 60;                       // board origin (260 × 520)
+  const NX = BX + BW * CELL + 16;               // side column
+  const LOCK_DELAY = 0.5, MAX_RESETS = 15, CLEAR_T = 0.28;
+  const SHAPES = {
+    I: [[0, 1], [1, 1], [2, 1], [3, 1]], O: [[1, 0], [2, 0], [1, 1], [2, 1]],
+    T: [[1, 0], [0, 1], [1, 1], [2, 1]], S: [[1, 0], [2, 0], [0, 1], [1, 1]],
+    Z: [[0, 0], [1, 0], [1, 1], [2, 1]], J: [[0, 0], [0, 1], [1, 1], [2, 1]],
+    L: [[2, 0], [0, 1], [1, 1], [2, 1]]
+  };
+  const BOX = { I: 4, O: 4, T: 3, S: 3, Z: 3, J: 3, L: 3 };
+  const KICKS = [[0, 0], [-1, 0], [1, 0], [0, -1], [-2, 0], [2, 0], [1, -1], [-1, -1]];
+  const LINE_PTS = [0, 100, 300, 500, 800];
+  const LABEL_FONT = '500 12px -apple-system, system-ui, sans-serif';
+
+  let board, piece, next, bag, lines, fallT, lockT, resets, clearing, intro, overTimer, touch, lastTap;
+
+  /* ----- setup ----- */
+  const emptyBoard = () => Array.from({ length: BH }, () => new Array(BW).fill(0));
+  function drawFromBag() {                      // 7-bag randomizer
+    if (!bag.length) { bag = Object.keys(SHAPES); for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; } }
+    return bag.pop();
+  }
+  function makePiece(type) {
+    return { type, cells: SHAPES[type].map(c => c.slice()), x: 3, y: type === 'I' ? -1 : 0 };
+  }
+  function reset() {                            // idle scene: a half-built stack
+    board = emptyBoard(); bag = []; piece = null; next = drawFromBag();
+    lines = 0; fallT = 0; lockT = 0; resets = 0; clearing = null; intro = 0; overTimer = 0; touch = null; lastTap = null;
+    for (let y = BH - 5; y < BH; y++) {
+      const gap = Math.floor(Math.random() * BW);
+      for (let x = 0; x < BW; x++) board[y][x] = x !== gap && (y > BH - 4 || Math.random() < 0.55) ? 1 : 0;
+    }
+  }
+  function start() {
+    reset();
+    board = emptyBoard();
+    spawn();
+    intro = 0.9;
+    showBanner('Level 1');
+  }
+
+  /* ----- rules ----- */
+  function collides(cells, px, py) {
+    for (const [cx, cy] of cells) {
+      const x = px + cx, y = py + cy;
+      if (x < 0 || x >= BW || y >= BH) return true;
+      if (y >= 0 && board[y][x]) return true;
+    }
+    return false;
+  }
+  const grounded = () => collides(piece.cells, piece.x, piece.y + 1);
+  function lockReset() { if (grounded() && resets < MAX_RESETS) { lockT = 0; resets++; } }
+
+  function tryMove(dx, dy) {
+    if (!piece || collides(piece.cells, piece.x + dx, piece.y + dy)) return false;
+    piece.x += dx; piece.y += dy;
+    if (dx) lockReset();
+    return true;
+  }
+  function rotate(dir) {
+    if (!piece || piece.type === 'O') return;
+    const n = BOX[piece.type];
+    const cells = piece.cells.map(([x, y]) => dir > 0 ? [n - 1 - y, x] : [y, n - 1 - x]);
+    for (const [kx, ky] of KICKS) {
+      if (!collides(cells, piece.x + kx, piece.y + ky)) {
+        piece.cells = cells; piece.x += kx; piece.y += ky;
+        sfx.turn(); lockReset();
+        return;
+      }
+    }
+  }
+  function softDrop() { if (tryMove(0, 1)) { addScore(1); fallT = 0; updateHud(); return true; } return false; }
+  function hardDrop() {
+    if (!piece) return;
+    let n = 0;
+    while (!collides(piece.cells, piece.x, piece.y + 1)) { piece.y++; n++; }
+    addScore(n * 2); updateHud();
+    sfx.drop();
+    lock();
+  }
+  function spawn() {
+    piece = makePiece(next); next = drawFromBag();
+    fallT = 0; lockT = 0; resets = 0;
+    if (collides(piece.cells, piece.x, piece.y)) topOut();
+  }
+  function topOut() {
+    piece = null;
+    burst(BX + BW * CELL / 2, BY + 20, theme.accent, 24);
+    shakeScreen();
+    sfx.playerHit();
+    overTimer = 1.0;
+  }
+  function lock() {
+    for (const [cx, cy] of piece.cells) {
+      const y = piece.y + cy;
+      if (y < 0) { topOut(); return; }            // locked above the board
+      board[y][piece.x + cx] = 1;
+    }
+    piece = null;
+    const full = [];
+    for (let y = 0; y < BH; y++) if (board[y].every(v => v)) full.push(y);
+    if (!full.length) { sfx.lock(); resetCombo(); spawn(); return; }
+
+    // score: base × level × combo; consecutive clearing pieces raise the combo
+    const n = full.length, pts = LINE_PTS[n] * run.wave * run.mult;
+    addScore(pts);
+    addFloater(BX + BW * CELL / 2, BY + full[0] * CELL, '+' + fmt(pts), run.mult > 1 || n === 4 ? theme.accent : theme.muted);
+    run.streak++;
+    run.mult = Math.min(5, 1 + run.streak);
+    updateHud();
+    sfx.clear(n);
+    for (const y of full) for (let x = 0; x < BW; x += 2) burst(BX + (x + 1) * CELL, BY + (y + 0.5) * CELL, theme.text, 2);
+    clearing = { rows: full, t: CLEAR_T };
+
+    const before = run.wave;
+    lines += n;
+    run.wave = Math.min(20, 1 + Math.floor(lines / 10));
+    if (run.wave > before) { showBanner('Level ' + run.wave); sfx.wave(); }
+  }
+  const gravity = () => Math.max(0.05, Math.pow(0.8 - (run.wave - 1) * 0.007, run.wave - 1));
+
+  /* ----- update ----- */
+  function update(dt) {
+    if (overTimer > 0) { overTimer -= dt; if (overTimer <= 0) endGame(); return; }
+    if (intro > 0) { intro -= dt; return; }
+    if (clearing) {
+      clearing.t -= dt;
+      if (clearing.t <= 0) {
+        for (const y of clearing.rows) { board.splice(y, 1); board.unshift(new Array(BW).fill(0)); }
+        clearing = null;
+        spawn();
+      }
+      return;
+    }
+    if (!piece) return;
+    fallT += dt;
+    const g = gravity();
+    while (fallT >= g) { fallT -= g; if (!tryMove(0, 1)) { fallT = 0; break; } }
+    if (grounded()) { lockT += dt; if (lockT >= LOCK_DELAY) lock(); }
+    else lockT = 0;
+  }
+
+  /* ----- input: drag to move or ease down, tap to turn, double tap to drop ----- */
+  const canAct = () => piece && !clearing && intro <= 0 && overTimer <= 0;
+  function pointerDown(lx, ly) { touch = { sx: lx, sy: ly, ax: lx, ay: ly, t: performance.now(), moved: false }; }
+  function pointerMove(lx, ly) {
+    if (!touch || !canAct()) return;
+    const step = CELL * 0.8;
+    while (lx - touch.ax >= step) { touch.ax += step; touch.moved = true; if (tryMove(1, 0)) sfx.move(); }
+    while (touch.ax - lx >= step) { touch.ax -= step; touch.moved = true; if (tryMove(-1, 0)) sfx.move(); }
+    const vertical = Math.abs(ly - touch.sy) > Math.abs(lx - touch.sx);
+    while (ly - touch.ay >= CELL) { touch.ay += CELL; if (vertical) { touch.moved = true; softDrop(); } }
+    if (ly < touch.ay) touch.ay = ly;
+  }
+  function pointerUp(lx, ly) {
+    if (!touch) return;
+    const dt = performance.now() - touch.t, dx = lx - touch.sx, dy = ly - touch.sy;
+    const isTap = !touch.moved && Math.hypot(dx, dy) < 12 && dt < 350;
+    touch = null;
+    if (!isTap || !canAct()) return;
+    const now = performance.now();
+    if (lastTap && lastTap.piece === piece && now - lastTap.t < 320) {
+      // second tap: undo the turn from the first tap, then drop all the way
+      piece.cells = lastTap.cells; piece.x = lastTap.x; piece.y = lastTap.y;
+      lastTap = null;
+      hardDrop();
+      return;
+    }
+    lastTap = { piece, t: now, cells: piece.cells.map(c => c.slice()), x: piece.x, y: piece.y };
+    rotate(lx < BX + BW * CELL / 2 ? -1 : 1);
+  }
+  function release() { touch = null; }
+  function keyDown(k, repeat) {
+    const handled = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' ', 'z', 'Z', 'x', 'X'];
+    if (!handled.includes(k)) return false;
+    if (!canAct()) return true;
+    if (k === 'ArrowLeft') { if (tryMove(-1, 0)) sfx.move(); }
+    else if (k === 'ArrowRight') { if (tryMove(1, 0)) sfx.move(); }
+    else if (k === 'ArrowDown') softDrop();
+    else if (k === ' ') { if (!repeat) hardDrop(); }
+    else if (!repeat) rotate(k === 'z' || k === 'Z' ? -1 : 1);
+    return true;
+  }
+
+  /* ----- draw ----- */
+  function block(x, y, size) { ctx.fillRect(x + 1.5, y + 1.5, size - 3, size - 3); }
+  function roundRectPath(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  function draw() {
+    const hair = 1 / view.scale;
+    ctx.lineWidth = hair; ctx.strokeStyle = theme.border;
+    roundRectPath(BX - 4, BY - 4, BW * CELL + 8, BH * CELL + 8, 12); ctx.stroke();
+
+    // settled blocks (clearing rows fade out)
+    ctx.fillStyle = theme.text;
+    for (let y = 0; y < BH; y++) {
+      const fading = clearing && clearing.rows.includes(y);
+      if (fading) ctx.globalAlpha = Math.max(0, clearing.t / CLEAR_T);
+      for (let x = 0; x < BW; x++) if (board[y][x]) block(BX + x * CELL, BY + y * CELL, CELL);
+      if (fading) ctx.globalAlpha = 1;
+    }
+
+    if (piece) {
+      // ghost: where the piece will land
+      let gy = piece.y;
+      while (!collides(piece.cells, piece.x, gy + 1)) gy++;
+      ctx.fillStyle = theme.border;
+      for (const [cx, cy] of piece.cells) if (gy + cy >= 0) block(BX + (piece.x + cx) * CELL, BY + (gy + cy) * CELL, CELL);
+      ctx.fillStyle = theme.accent;
+      for (const [cx, cy] of piece.cells) if (piece.y + cy >= 0) block(BX + (piece.x + cx) * CELL, BY + (piece.y + cy) * CELL, CELL);
+    }
+
+    // side column: next piece, lines, level
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = theme.muted; ctx.font = LABEL_FONT;
+    ctx.fillText('Next', NX, BY + 10);
+    ctx.fillText('Lines', NX, BY + 112);
+    ctx.fillText('Level', NX, BY + 168);
+    ctx.fillStyle = theme.text;
+    const s = 13, shape = SHAPES[next], n = BOX[next];
+    for (const [cx, cy] of shape) block(NX + cx * s + (n === 3 ? s / 2 : 0), BY + 24 + cy * s, s);
+    ctx.font = `600 20px ${FONT_MONO}`;
+    ctx.fillText(String(lines), NX, BY + 136);
+    ctx.fillText(String(run.wave), NX, BY + 192);
+  }
+
+  return {
+    id: 'layline', name: 'Layline', hiKey: 'layline.highScore',
+    howTo: 'Drag sideways to move a piece and down to ease it lower; tap to turn it, double tap to drop it.',
+    keysHint: 'Keyboard: left and right to move, up or Z to turn, down to ease, space to drop, P to pause.',
+    overText: best => best ? 'A new best score before the stack reached the top.' : 'The stack reached the top this time.',
+    bannerY: 300, extraLifeEvery: 0, noLives: true, touchAnywhere: true, waveLabel: 'Level',
+    reset, start, update, draw, pointerDown, pointerMove, pointerUp, release, keyDown
+  };
+})();
+
+/* =====================================================================
+   GAME 4 — UPSTREAM (forward-scrolling shooter with missiles and shields)
+   ===================================================================== */
+const Headway = (() => {
+  const PX_MIN = 16, PX_MAX = LW - 16, PY_MIN = Math.round(LH * 0.45), PY_MAX = LH - 36;
+  const PLAYER_R = 7, SHOT_V = 520, SHOT_LEN = 10, FIRE_GAP = 0.16, DRAG_GAIN = 1.15, KEY_SPEED = 240;
+  const MAX_MISSILES = 3, MAX_SHIELDS = 2, DOUBLE_TAP_MS = 300, BLAST_R = 56;
+  const TYPES = {
+    drifter: { shape: 'circle', r: 9, hp: 1, pts: 10 },
+    diver:   { shape: 'triangle', r: 9, hp: 1, pts: 20 },
+    turret:  { shape: 'square', r: 11, hp: 3, pts: 50 }
+  };
+
+  let player, shots, missiles, blasts, enemies, eShots, walls, pickups, stars, dashOff;
+  let plan, planIdx, planT, pickupTimer, shieldTimer, intro, overTimer, fireCd, missilesHeld, shieldCharges, drag, lastTap;
+
+  const scrollSpeed = () => Math.min(160, 70 + 10 * (run.wave - 1));
+  const newPlayer = () => ({ x: LW / 2, y: LH - 80, alive: true, respawn: 0, inv: 2 });
+
+  /* ----- setup ----- */
+  function makeStars() {
+    stars = [];
+    for (let i = 0; i < 48; i++) {
+      const layer = i % 3 === 0 ? 1 : 0;
+      stars.push({ x: rand(0, LW), y: rand(0, LH), speed: layer ? 1 : 0.45, size: layer ? 2.2 : 1.5 });
+    }
+    dashOff = 0;
+  }
+  function addEnemy(type, x, y, extra) {
+    const t = TYPES[type];
