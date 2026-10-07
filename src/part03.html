@@ -1,0 +1,442 @@
+  const CELL_W = 34, CELL_H = 30, ENEMY_SIZE = 18;
+  const ROW_SHAPES = ['triangle', 'circle', 'circle', 'square', 'square'];
+  const ROW_POINTS = [30, 20, 20, 10, 10];
+  const EDGE = 10, STEP_DOWN = 14;
+  const PLAYER_Y = 584, PLAYER_SPEED = 230, MIN_X = 18, MAX_X = LW - 18;
+  const SHOT_SPEED = 470, SHOT_LEN = 12;
+  const SHIELD_Y = 492, SHIELD_COLS = 12, SHIELD_ROWS = 7, CELL = 5;
+  const SHIELD_W = SHIELD_COLS * CELL, SHIELD_H = SHIELD_ROWS * CELL;
+  const GROUND_Y = 612, DRAG_GAIN = 1.15;
+
+  let player, fireCd, shot, eShots, enemies, alive, grid, shields, bonus, bonusTimer, intro, overTimer, animT, drag;
+
+  const ex = e => grid.ox + e.c * CELL_W + CELL_W / 2;
+  const ey = e => grid.oy + e.r * CELL_H + CELL_H / 2;
+
+  /* ----- setup ----- */
+  function buildWave(withBanner) {
+    enemies = [];
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) enemies.push({ r, c, alive: true });
+    alive = TOTAL;
+    grid = { ox: (LW - COLS * CELL_W) / 2, oy: 64 + Math.min(run.wave - 1, 5) * 10, dir: 1, fireTimer: 1.4 };
+    shot = null; eShots = []; bonus = null;
+    bonusTimer = rand(12, 20);
+    intro = withBanner ? INTRO_TIME : 0;
+    if (withBanner) showBanner('Wave ' + run.wave);
+  }
+  function buildShields() {
+    shields = [0.2, 0.5, 0.8].map(f => {
+      const cells = new Uint8Array(SHIELD_COLS * SHIELD_ROWS);
+      for (let r = 0; r < SHIELD_ROWS; r++) for (let c = 0; c < SHIELD_COLS; c++) {
+        let on = 1;
+        if (r === 0 && (c < 2 || c > SHIELD_COLS - 3)) on = 0;             // rounded corners
+        if (r === 1 && (c < 1 || c > SHIELD_COLS - 2)) on = 0;
+        if (r >= SHIELD_ROWS - 2 && c >= 4 && c <= SHIELD_COLS - 5) on = 0; // arch
+        cells[r * SHIELD_COLS + c] = on;
+      }
+      return { x: Math.round(LW * f - SHIELD_W / 2), y: SHIELD_Y, cells };
+    });
+  }
+  function reset() {
+    player = { x: LW / 2, alive: true, respawn: 0, inv: 0 };
+    fireCd = 0; overTimer = 0; animT = 0; drag = null;
+    buildWave(false); buildShields();
+  }
+  function start() { reset(); buildWave(true); }
+
+  /* ----- input ----- */
+  function pointerDown(lx) { drag = { startX: lx, shipX: player.x }; }
+  function pointerMove(lx) { if (drag) player.x = clamp(drag.shipX + (lx - drag.startX) * DRAG_GAIN, MIN_X, MAX_X); }
+  function release() { drag = null; }
+
+  /* ----- update ----- */
+  function update(dt) {
+    if (overTimer > 0) { overTimer -= dt; if (overTimer <= 0) endGame(); return; }
+    updatePlayer(dt);
+    updateShot(dt);
+    if (intro > 0) { intro -= dt; return; }   // formation holds during the banner
+    if (!player.alive) return;                // and while the ship respawns
+    updateGrid(dt);
+    updateEnemyFire(dt);
+    updateEnemyShots(dt);
+    updateBonus(dt);
+  }
+
+  function updatePlayer(dt) {
+    if (!player.alive) {
+      if (run.lives > 0) { player.respawn -= dt; if (player.respawn <= 0) { player.alive = true; player.inv = 1.5; } }
+      return;
+    }
+    player.inv = Math.max(0, player.inv - dt);
+    const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    if (dir) player.x = clamp(player.x + dir * PLAYER_SPEED * dt, MIN_X, MAX_X);
+    fireCd -= dt;
+    if ((drag || keys.fire) && !shot && fireCd <= 0) {
+      shot = { x: player.x, y: PLAYER_Y - 12 };
+      fireCd = 0.1;
+      sfx.shoot();
+    }
+  }
+
+  function updateShot(dt) {
+    if (!shot) return;
+    const y0 = shot.y;
+    shot.y -= SHOT_SPEED * dt;
+    const h = shieldHitAlong(shot.x, y0, shot.y);
+    if (h) { erode(h); shot = null; resetCombo(); return; }   // own shield = miss
+
+    const top = shot.y, bottom = y0 + SHOT_LEN, half = ENEMY_SIZE / 2;
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const x = ex(e), y = ey(e);
+      if (Math.abs(shot.x - x) <= half + 1.5 && top <= y + half && bottom >= y - half) {
+        e.alive = false; alive--; shot = null;
+        registerHit(ROW_POINTS[e.r], x, y, theme.text, false);
+        sfx.hit(run.mult);
+        if (alive === 0) { run.wave++; buildWave(true); buildShields(); sfx.wave(); }
+        return;
+      }
+    }
+    if (bonus && Math.abs(shot.x - bonus.x) <= 16 && top <= bonus.y + 8 && bottom >= bonus.y - 8) {
+      shot = null;
+      registerHit(bonus.pts, bonus.x, bonus.y, theme.accent, true, 18);
+      sfx.bonus();
+      bonus = null; bonusTimer = rand(14, 24);
+      return;
+    }
+    if (shot.y < -SHOT_LEN) { shot = null; resetCombo(); }
+  }
+
+  function gridSpeed() {
+    const frac = 1 - alive / TOTAL;
+    return Math.min(270, (18 + 7 * (run.wave - 1)) * (1 + frac + 3 * frac * frac));
+  }
+
+  function updateGrid(dt) {
+    let minC = COLS, maxC = -1, maxR = -1;
+    for (const e of enemies) if (e.alive) {
+      if (e.c < minC) minC = e.c;
+      if (e.c > maxC) maxC = e.c;
+      if (e.r > maxR) maxR = e.r;
+    }
+    if (maxC < 0) return;
+    const sp = gridSpeed();
+    grid.ox += grid.dir * sp * dt;
+    animT += dt * sp / 26;
+    const half = ENEMY_SIZE / 2;
+    const left = grid.ox + minC * CELL_W + CELL_W / 2 - half;
+    const right = grid.ox + maxC * CELL_W + CELL_W / 2 + half;
+    if (grid.dir > 0 && right > LW - EDGE) { grid.ox -= right - (LW - EDGE); grid.dir = -1; grid.oy += STEP_DOWN; }
+    else if (grid.dir < 0 && left < EDGE) { grid.ox += EDGE - left; grid.dir = 1; grid.oy += STEP_DOWN; }
+    const bottom = grid.oy + maxR * CELL_H + CELL_H / 2 + half;
+    if (bottom > SHIELD_Y) carveShields();
+    if (bottom >= PLAYER_Y - 12) { run.lives = 0; destroyPlayer(); }   // formation reached the ship
+  }
+
+  function updateEnemyFire(dt) {
+    grid.fireTimer -= dt;
+    if (grid.fireTimer > 0) return;
+    const w = run.wave;
+    grid.fireTimer = rand(0.55, 1.35) * Math.max(0.4, 1 - 0.09 * (w - 1));
+    if (eShots.length >= Math.min(5, 2 + Math.floor(w / 2))) return;
+    const shooters = [];
+    for (let c = 0; c < COLS; c++) {
+      for (let r = ROWS - 1; r >= 0; r--) {
+        const e = enemies[r * COLS + c];
+        if (e.alive) { shooters.push(e); break; }
+      }
+    }
+    if (!shooters.length) return;
+    const pick = Math.random() < 0.4
+      ? shooters.reduce((a, b) => Math.abs(ex(a) - player.x) < Math.abs(ex(b) - player.x) ? a : b)
+      : shooters[Math.floor(Math.random() * shooters.length)];
+    eShots.push({ x: ex(pick), y: ey(pick) + ENEMY_SIZE / 2 + 2, vy: Math.min(270, 150 + 14 * (w - 1)) });
+  }
+
+  function updateEnemyShots(dt) {
+    for (let i = eShots.length - 1; i >= 0; i--) {
+      const s = eShots[i], y0 = s.y;
+      s.y += s.vy * dt;
+      const h = shieldHitAlong(s.x, y0, s.y);
+      if (h) { erode(h); eShots.splice(i, 1); continue; }
+      if (player.alive && player.inv <= 0 && Math.abs(s.x - player.x) < 13 && s.y > PLAYER_Y - 9 && s.y - 9 < PLAYER_Y + 8) {
+        run.lives = Math.max(0, run.lives - 1);
+        destroyPlayer();
+        break;                                    // destroyPlayer clears enemy shots
+      }
+      if (s.y > GROUND_Y) eShots.splice(i, 1);
+    }
+  }
+
+  function updateBonus(dt) {
+    if (!bonus) {
+      bonusTimer -= dt;
+      if (bonusTimer <= 0 && alive > 6) {
+        const dir = Math.random() < 0.5 ? 1 : -1;
+        bonus = { x: dir > 0 ? -20 : LW + 20, y: 38, dir, v: 72, pts: [50, 100, 150, 300][Math.floor(Math.random() * 4)] };
+      }
+      return;
+    }
+    bonus.x += bonus.dir * bonus.v * dt;
+    if (bonus.x < -30 || bonus.x > LW + 30) { bonus = null; bonusTimer = rand(14, 24); }
+  }
+
+  function destroyPlayer() {
+    player.alive = false; player.respawn = 1.2;
+    eShots = [];
+    resetCombo();
+    burst(player.x, PLAYER_Y, theme.accent, 24);
+    shakeScreen();
+    sfx.playerHit();
+    updateHud();
+    if (run.lives <= 0) overTimer = 1.2;
+  }
+
+  /* ----- shields ----- */
+  function shieldCellAt(x, y) {
+    for (const s of shields) {
+      if (x < s.x || x >= s.x + SHIELD_W || y < s.y || y >= s.y + SHIELD_H) continue;
+      const c = Math.floor((x - s.x) / CELL), r = Math.floor((y - s.y) / CELL);
+      if (s.cells[r * SHIELD_COLS + c]) return { s, r, c };
+    }
+    return null;
+  }
+  function shieldHitAlong(x, ya, yb) {            // swept test so fast shots can't tunnel
+    if (Math.max(ya, yb) < SHIELD_Y || Math.min(ya, yb) > SHIELD_Y + SHIELD_H) return null;
+    const d = yb - ya, n = Math.max(1, Math.ceil(Math.abs(d) / 2));
+    for (let i = 0; i <= n; i++) { const h = shieldCellAt(x, ya + d * i / n); if (h) return h; }
+    return null;
+  }
+  function erode({ s, r, c }) {
+    s.cells[r * SHIELD_COLS + c] = 0;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const rr = r + dr, cc = c + dc;
+      if ((dr || dc) && rr >= 0 && rr < SHIELD_ROWS && cc >= 0 && cc < SHIELD_COLS && Math.random() < 0.3) s.cells[rr * SHIELD_COLS + cc] = 0;
+    }
+    burst(s.x + (c + 0.5) * CELL, s.y + (r + 0.5) * CELL, theme.muted, 4);
+    sfx.shield();
+  }
+  function carveShields() {                       // low enemies wipe out the shield pieces they touch
+    const h = ENEMY_SIZE / 2;
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const x = ex(e), y = ey(e);
+      if (y + h < SHIELD_Y) continue;
+      for (const s of shields) {
+        if (x + h < s.x || x - h > s.x + SHIELD_W) continue;
+        const c0 = Math.max(0, Math.floor((x - h - s.x) / CELL)), c1 = Math.min(SHIELD_COLS - 1, Math.floor((x + h - s.x) / CELL));
+        const r0 = Math.max(0, Math.floor((y - h - s.y) / CELL)), r1 = Math.min(SHIELD_ROWS - 1, Math.floor((y + h - s.y) / CELL));
+        for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) s.cells[r * SHIELD_COLS + c] = 0;
+      }
+    }
+  }
+
+  /* ----- draw ----- */
+  function draw() {
+    ctx.fillStyle = theme.border;
+    ctx.fillRect(EDGE, GROUND_Y, LW - EDGE * 2, 1 / view.scale);
+    for (const s of shields) {
+      for (let r = 0; r < SHIELD_ROWS; r++) for (let c = 0; c < SHIELD_COLS; c++) {
+        if (s.cells[r * SHIELD_COLS + c]) ctx.fillRect(s.x + c * CELL, s.y + r * CELL, CELL + 0.05, CELL + 0.05);
+      }
+    }
+    ctx.fillStyle = theme.text;
+    const frame = Math.floor(animT) % 2;
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const bob = reduceMotion ? 0 : ((frame + e.c) % 2 ? -1 : 1);
+      drawShape(ROW_SHAPES[e.r], ex(e), ey(e) + bob, ENEMY_SIZE);
+    }
+    if (bonus) {
+      ctx.fillStyle = theme.accent;
+      ctx.beginPath();
+      ctx.moveTo(bonus.x - 16, bonus.y); ctx.lineTo(bonus.x, bonus.y - 8);
+      ctx.lineTo(bonus.x + 16, bonus.y); ctx.lineTo(bonus.x, bonus.y + 8);
+      ctx.closePath(); ctx.fill();
+    }
+    if (player.alive && !(player.inv > 0 && !reduceMotion && Math.floor(player.inv * 12) % 2)) {
+      if (player.inv > 0) ctx.globalAlpha = 0.45;
+      ctx.fillStyle = theme.accent;
+      shipPath(player.x, PLAYER_Y); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (shot) { ctx.fillStyle = theme.accent; ctx.fillRect(shot.x - 1.25, shot.y, 2.5, SHOT_LEN); }
+    ctx.fillStyle = theme.text;
+    for (const s of eShots) ctx.fillRect(s.x - 1.5, s.y - 9, 3, 9);
+  }
+
+  return {
+    id: 'drift', name: 'Drift Defense', hiKey: 'driftDefense.highScore',
+    howTo: 'Drag along the lower half of the screen to steer; your ship fires while your finger is down.',
+    keysHint: 'Keyboard: arrow keys to move, space to fire, P to pause.',
+    overText: best => best ? 'A new best score. The formation finally got through.' : 'The formation broke through this time.',
+    bannerY: 370, extraLifeEvery: 0,
+    reset, start, update, draw, pointerDown, pointerMove, release
+  };
+})();
+
+/* =====================================================================
+   GAME 2 — FRACTURE FIELD (drifting rocks, wrap-around space)
+   ===================================================================== */
+const FractureField = (() => {
+  const SHIP_R = 9, KEY_TURN = 4.4, AIM_TURN = 9, THRUST = 250, MAX_V = 230, DRAG = 0.55;
+  const SHOT_V = 430, SHOT_LIFE = 0.85, MAX_SHOTS = 4, FIRE_GAP = 0.2;
+  const ROCK_R = [0, 10, 19, 34], ROCK_PTS = [0, 100, 50, 20];
+  const ROCK_SPEED = [null, [50, 95], [34, 66], [18, 40]];
+  const STICK_DEAD = 8, STICK_AIM = 26, STICK_MAX = 70;   // aim only inside STICK_AIM, thrust beyond it
+  const SEEKER_PTS = 200;
+
+  let ship, shots, rocks, seeker, sShots, seekerTimer, intro, overTimer, fireCd, stick;
+
+  const wrapD = (d, span) => d - span * Math.round(d / span);
+  const dist2 = (a, b) => { const dx = wrapD(a.x - b.x, LW), dy = wrapD(a.y - b.y, LH); return dx * dx + dy * dy; };
+  function wrap(o) {
+    if (o.x < 0) o.x += LW; else if (o.x >= LW) o.x -= LW;
+    if (o.y < 0) o.y += LH; else if (o.y >= LH) o.y -= LH;
+  }
+  function angleDiff(a) { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; }
+  const speedMul = () => Math.min(1.6, 1 + 0.08 * (run.wave - 1));
+
+  /* ----- setup ----- */
+  function newShip() { return { x: LW / 2, y: LH / 2, vx: 0, vy: 0, a: 0, alive: true, respawn: 0, inv: 2, thrust: 0 }; }
+  function makeRock(size, x, y, dirA) {
+    const n = 9 + Math.floor(Math.random() * 3), pts = [];
+    for (let i = 0; i < n; i++) pts.push(rand(0.72, 1));
+    const a = dirA === undefined ? rand(0, Math.PI * 2) : dirA;
+    const sp = rand(ROCK_SPEED[size][0], ROCK_SPEED[size][1]) * speedMul();
+    return { size, r: ROCK_R[size], x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, rot: rand(0, Math.PI * 2), spin: rand(-0.8, 0.8), pts };
+  }
+  function spawnWave() {
+    rocks = [];
+    const n = Math.min(3 + run.wave, 10);
+    for (let i = 0; i < n; i++) {
+      let x, y, tries = 0;
+      do {   // start on an edge, away from the ship
+        if (Math.random() < 0.5) { x = rand(0, LW); y = Math.random() < 0.5 ? 0 : LH - 1; }
+        else { x = Math.random() < 0.5 ? 0 : LW - 1; y = rand(0, LH); }
+      } while (++tries < 20 && Math.hypot(x - ship.x, y - ship.y) < 160);
+      rocks.push(makeRock(3, x, y));
+    }
+  }
+  function clearRun() {
+    shots = []; sShots = []; seeker = null; seekerTimer = rand(18, 28);
+    overTimer = 0; fireCd = 0; stick = null; intro = 0;
+  }
+  function reset() {            // idle scene behind the menus
+    clearRun();
+    ship = newShip(); ship.inv = 0;
+    rocks = [3, 3, 2, 2, 1].map(s => {
+      let x, y;
+      do { x = rand(0, LW); y = rand(0, LH); } while (Math.hypot(x - LW / 2, y - LH / 2) < 90);
+      return makeRock(s, x, y);
+    });
+  }
+  function start() {
+    clearRun();
+    ship = newShip();
+    spawnWave();
+    intro = INTRO_TIME;
+    showBanner('Wave ' + run.wave);
+  }
+
+  /* ----- input: floating joystick ----- */
+  function pointerDown(lx, ly) { stick = { ox: lx, oy: ly, dx: 0, dy: 0, len: 0 }; }
+  function pointerMove(lx, ly) {
+    if (!stick) return;
+    let dx = lx - stick.ox, dy = ly - stick.oy, len = Math.hypot(dx, dy);
+    if (len > STICK_MAX) {      // drag the ring along so reversing feels immediate
+      stick.ox = lx - dx / len * STICK_MAX; stick.oy = ly - dy / len * STICK_MAX;
+      dx = lx - stick.ox; dy = ly - stick.oy; len = STICK_MAX;
+    }
+    stick.dx = dx; stick.dy = dy; stick.len = len;
+  }
+  function release() { stick = null; }
+
+  /* ----- update ----- */
+  function idle(dt) {           // slow drift behind the start/menu screens
+    if (reduceMotion) return;
+    for (const r of rocks) { r.x += r.vx * 0.5 * dt; r.y += r.vy * 0.5 * dt; r.rot += r.spin * 0.5 * dt; wrap(r); }
+  }
+
+  function update(dt) {
+    fireCd -= dt;
+    updateShip(dt);
+    updateShots(dt);
+    if (overTimer > 0) { overTimer -= dt; moveRocks(dt); if (overTimer <= 0) endGame(); return; }
+    if (intro > 0) intro -= dt;
+    else { moveRocks(dt); updateSeeker(dt); }
+    collide();
+    if (!rocks.length && intro <= 0 && overTimer <= 0) {
+      seeker = null; sShots = [];
+      run.wave++;
+      spawnWave();
+      intro = INTRO_TIME;
+      showBanner('Wave ' + run.wave);
+      sfx.wave();
+    }
+  }
+
+  function centerClear() {
+    return rocks.every(r => Math.hypot(wrapD(r.x - LW / 2, LW), wrapD(r.y - LH / 2, LH)) > r.r + 70) &&
+      (!seeker || Math.hypot(seeker.x - LW / 2, seeker.y - LH / 2) > 90);
+  }
+
+  function updateShip(dt) {
+    if (!ship.alive) {
+      if (run.lives > 0 && overTimer <= 0) {
+        ship.respawn -= dt;
+        if (ship.respawn <= 0 && centerClear()) ship = newShip();
+      }
+      return;
+    }
+    ship.inv = Math.max(0, ship.inv - dt);
+    let thrust = 0;
+    if (stick && stick.len > STICK_DEAD) {
+      const target = Math.atan2(stick.dx, -stick.dy);         // 0 = up, clockwise
+      const step = AIM_TURN * dt;
+      ship.a += clamp(angleDiff(target - ship.a), -step, step);
+      thrust = clamp((stick.len - STICK_AIM) / (STICK_MAX - STICK_AIM), 0, 1);
+    } else {
+      ship.a += ((keys.right ? 1 : 0) - (keys.left ? 1 : 0)) * KEY_TURN * dt;
+      if (keys.up) thrust = 1;
+    }
+    ship.thrust = thrust;
+    const hx = Math.sin(ship.a), hy = -Math.cos(ship.a);
+    ship.vx += hx * THRUST * thrust * dt;
+    ship.vy += hy * THRUST * thrust * dt;
+    const damp = Math.exp(-DRAG * dt);
+    ship.vx *= damp; ship.vy *= damp;
+    const sp = Math.hypot(ship.vx, ship.vy);
+    if (sp > MAX_V) { ship.vx *= MAX_V / sp; ship.vy *= MAX_V / sp; }
+    ship.x += ship.vx * dt; ship.y += ship.vy * dt;
+    wrap(ship);
+
+    if ((stick || keys.fire) && fireCd <= 0 && shots.length < MAX_SHOTS) {
+      shots.push({ x: ship.x + hx * 11, y: ship.y + hy * 11, vx: hx * SHOT_V + ship.vx * 0.5, vy: hy * SHOT_V + ship.vy * 0.5, life: SHOT_LIFE });
+      fireCd = FIRE_GAP;
+      sfx.shoot();
+    }
+  }
+
+  function updateShots(dt) {
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const s = shots[i];
+      s.x += s.vx * dt; s.y += s.vy * dt; wrap(s);
+      s.life -= dt;
+      if (s.life <= 0) { shots.splice(i, 1); resetCombo(); }   // shot faded without a hit = miss
+    }
+    for (let i = sShots.length - 1; i >= 0; i--) {
+      const s = sShots[i];
+      s.x += s.vx * dt; s.y += s.vy * dt; wrap(s);
+      s.life -= dt;
+      if (s.life <= 0) sShots.splice(i, 1);
+    }
+  }
+
+  function moveRocks(dt) {
+    for (const r of rocks) { r.x += r.vx * dt; r.y += r.vy * dt; r.rot += r.spin * dt; wrap(r); }
+  }
+
+  function updateSeeker(dt) {
+    if (!seeker) {
+      seekerTimer -= dt;
