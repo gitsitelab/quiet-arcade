@@ -10,7 +10,25 @@
 <meta name="theme-color" content="#141413" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
 <title>Quiet Arcade</title>
-<meta name="description" content="Five small arcade games for your phone: Drift Defense, Fracture Field, Layline, Upstream and Switchback.">
+<script>
+// Safety net: if the games fail to start, show what went wrong instead of a blank screen.
+(function () {
+  function show(msg) {
+    if (window.__qaBooted || document.getElementById('qa-fatal')) return;
+    var box = document.createElement('div');
+    box.id = 'qa-fatal';
+    box.setAttribute('role', 'alert');
+    box.style.cssText = 'position:fixed;left:16px;right:16px;bottom:16px;z-index:99;padding:16px;border-radius:12px;background:#1C1C1A;color:#ECEAE3;border:1px solid #2C2B28;font:14px/1.45 -apple-system,system-ui,sans-serif';
+    box.innerHTML = '<strong style="display:block;margin-bottom:6px">The games could not start.</strong><span style="color:#959189"></span><br><button type="button" style="margin-top:10px;height:44px;padding:0 18px;border:0;border-radius:12px;background:#D97757;color:#fff;font:600 15px -apple-system,system-ui,sans-serif">Reload</button>';
+    box.querySelector('span').textContent = msg;
+    box.querySelector('button').onclick = function () { location.reload(); };
+    (document.body || document.documentElement).appendChild(box);
+  }
+  window.addEventListener('error', function (e) { show(e.message || 'Unknown error'); });
+  window.addEventListener('unhandledrejection', function (e) { show(String(e.reason)); });
+})();
+</script>
+<meta name="description" content="Five small arcade games for your phone: Drift Defense, Fracture Field, Layline, Upstream and Holdfast.">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -300,7 +318,7 @@
               <circle class="ic-text" cx="32" cy="17" r="3"/>
               <circle class="ic-text" cx="8" cy="31" r="3"/>
             </svg>
-            <span class="cname">Switchback</span>
+            <span class="cname">Holdfast</span>
             <span class="cdesc">Build towers along a winding road and stop every wave.</span>
             <span class="cbest" id="best-switchback">Best 0</span>
           </button>
