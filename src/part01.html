@@ -196,6 +196,26 @@
   .scores li.me .who, .scores li.me .pts { color: var(--accent); font-weight: 600; }
   .scores li.empty { display: block; text-align: center; border: 0; font: 400 14px/1.4 var(--sans); }
 
+  /* ---------- Journey: bosses beaten and chapter to start from ---------- */
+  .journey { display: flex; flex-direction: column; gap: 8px; margin: 0 0 18px; text-align: left; }
+  .journey[hidden], .journey-start[hidden] { display: none; }
+  .card .journey p { margin: 0; }
+  .card .journey .journey-label { font: 500 12px/1.2 var(--sans); color: var(--muted); }
+  .card .journey .journey-next { font: 400 13px/1.4 var(--sans); color: var(--muted); }
+  .journey-bosses { display: flex; flex-wrap: wrap; gap: 6px; }
+  .journey-bosses .boss {
+    font: 500 12px/1 var(--sans); color: var(--muted);
+    padding: 6px 9px; border: 1px solid var(--border); border-radius: 999px;
+  }
+  .journey-bosses .boss.done { color: var(--text); border-color: var(--accent); }
+  .journey-bosses .boss.done::before {
+    content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; vertical-align: 1px;
+    border-radius: 50%; background: var(--accent);
+  }
+  .journey-start { display: flex; flex-direction: column; gap: 6px; }
+  .journey-start .seg { margin-top: 0; }
+  .journey-start .seg button { height: 34px; font: 500 14px var(--mono); }
+
   /* ---------- Three-letter name picker ---------- */
   .initials { display: flex; justify-content: center; gap: 14px; margin: 0 0 22px; }
   .slot { display: flex; flex-direction: column; align-items: center; }
@@ -350,6 +370,15 @@
       <section class="card" data-screen="start" hidden>
         <h1 id="startTitle"></h1>
         <p id="startText"></p>
+        <div class="journey" id="startJourney" hidden>
+          <p class="journey-label">Journey</p>
+          <div class="journey-bosses" id="journeyBosses"></div>
+          <p class="journey-next" id="journeyNext"></p>
+          <div class="journey-start" hidden>
+            <p class="journey-label">Start at chapter</p>
+            <div class="seg" id="journeyStart" role="radiogroup" aria-label="Start at chapter"></div>
+          </div>
+        </div>
         <ol class="scores" id="startTable" aria-label="Top scores"></ol>
         <button class="primary" id="playBtn" type="button">Play</button>
         <div class="settings"><button class="toggle" data-mute type="button">Sound on</button><button class="toggle" data-music type="button">Music on</button></div>
