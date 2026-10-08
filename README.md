@@ -1,6 +1,6 @@
 # Quiet Arcade
 
-Four small arcade games for your phone, in one page: Drift Defense, Fracture Field, Layline and Upstream.
+Five small arcade games for your phone, in one page: Drift Defense, Fracture Field, Layline, Upstream and Switchback.
 
 Play: https://gitsitelab.github.io/quiet-arcade/
 
