@@ -123,9 +123,12 @@
   /* ---------- Screens ---------- */
   .overlay {
     position: absolute; inset: 0; padding: 20px;
-    display: flex; align-items: center; justify-content: center;
+    display: flex; align-items: flex-start; justify-content: center;
     background: var(--scrim);
+    overflow-y: auto; overscroll-behavior: contain;
+    touch-action: pan-y; -webkit-overflow-scrolling: touch;
   }
+  .overlay > .card { margin: auto 0; }         /* centred when it fits, scrollable when it doesn't */
   .overlay[hidden], .card[hidden] { display: none; }
   .card {
     width: min(330px, 100%);
@@ -221,22 +224,25 @@
   .seg button[aria-checked="true"] { background: var(--border); color: var(--text); }
 
   /* ---------- Game picker ---------- */
-  .choices { display: flex; flex-direction: column; gap: 10px; }
+  .card[data-screen="hub"] { width: min(360px, 100%); }
+  .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .choice {
-    display: grid; grid-template-columns: 40px 1fr; column-gap: 14px; align-items: center;
-    text-align: left; padding: 12px 14px; min-height: 44px;
+    display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+    text-align: left; padding: 12px; min-height: 44px; min-width: 0;
     border: 1px solid var(--border); border-radius: 12px;
     background: var(--bg); color: var(--text); cursor: pointer;
   }
   .choice:active { border-color: var(--accent); }
-  .choice svg { grid-row: 1 / 4; width: 40px; height: 40px; }
-  .cname { font: 600 19px/1.2 var(--serif); }
-  .cdesc { font: 400 14px/1.35 var(--sans); color: var(--muted); margin-top: 2px; }
-  .cbest { font: 400 13px/1.4 var(--mono); color: var(--muted); margin-top: 4px; }
-  @media (max-height: 780px) {
-    .choice { padding: 9px 12px; }
-    .choice .cdesc { display: none; }
-    .card[data-screen="hub"] { padding-top: 22px; }
+  .choice svg { width: 34px; height: 34px; flex: none; }
+  .cname { font: 600 17px/1.2 var(--serif); }
+  .cdesc { display: none; }                    /* each game's start screen explains it */
+  .cbest { font: 400 12px/1.3 var(--mono); color: var(--muted); }
+  /* an odd last game gets the full width, laid out in a row */
+  .choice:last-child:nth-child(odd) { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 12px; }
+  .choice:last-child:nth-child(odd) .cbest { margin-left: auto; }
+  @media (max-height: 700px) {
+    .card[data-screen="hub"] { padding-top: 20px; }
+    .card[data-screen="hub"] h1 { font-size: 26px; }
   }
 </style>
 </head>
