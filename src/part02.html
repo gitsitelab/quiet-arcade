@@ -200,7 +200,7 @@ const music = {
     clearTimeout(this.stopT);
     this.stopT = setTimeout(() => { clearInterval(this.timer); this.timer = null; this.song = null; }, 900);
   },
-  setLevel(v) { this.level = v; this.bus.gain.setTargetAtTime(v * 0.22, audio.ctx.currentTime, 0.3); },
+  setLevel(v) { this.level = v; this.bus.gain.setTargetAtTime(v * 0.6, audio.ctx.currentTime, 0.3); },
   tick() {
     const c = audio.ctx;
     if (!c || !this.song) return;
