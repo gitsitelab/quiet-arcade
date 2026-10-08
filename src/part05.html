@@ -2,7 +2,7 @@
   }
   function clearWorld() {
     shots = []; missiles = []; blasts = []; enemies = []; eShots = []; walls = []; pickups = [];
-    fireCd = 0; drag = null; lastTap = null; overTimer = 0; intro = 0; boss = null; bossPending = false;
+    fireCd = 0; drag = null; lastTap = null; overTimer = 0; intro = 0; boss = null; bossPending = false; columns = [];
   }
   function reset() {              // idle scene behind the menus
     clearWorld();
@@ -16,7 +16,7 @@
   function start() {
     clearWorld();
     player = newPlayer();
-    missilesHeld = 1; shieldCharges = 0;
+    missilesHeld = Math.min(3, 1 + chapterOf(shell.game, run.wave)); shieldCharges = 0;   // later starting chapters come better equipped
     pickupTimer = rand(12, 18);
     shieldTimer = rand(16, 26);
     beginWave();
@@ -24,56 +24,103 @@
   function beginWave() {
     plan = buildPlan(); planIdx = 0; planT = 0;
     intro = INTRO_TIME;
-    bossPending = run.wave % 3 === 0;             // every third wave ends with the Monolith
+    bossPending = run.wave % 3 === 0;             // every third wave ends with the chapter's boss
     if (bossPending) plan = plan.filter(e => e.t < 9);
-    showBanner('Wave ' + run.wave);
+    waveBanner(shell.game);
   }
+  // Four bosses, each testing something different: weaving through fans and rings (Monolith),
+  // reading a spiral (Weaver), clearing escorts and splitting shells (Carrier), and
+  // reacting to telegraphed light columns and a boss that vanishes (Eclipse).
   function spawnBoss() {
-    const hp = 40 + 20 * (run.wave / 3);
-    boss = { x: LW / 2, y: -40, hp, max: hp, t: 0, fireT: 1.5, ringT: 5, spawnT: 7, flash: 0 };
-    showBanner('The Monolith');
+    const idx = chapterOf(shell.game, run.wave), info = chapterInfo(shell.game, idx);
+    const hp = Math.round((40 + 16 * idx) * (1 + 0.4 * info.tier));
+    const [w, h] = { monolith: [34, 22], weaver: [24, 24], carrier: [58, 24], eclipse: [26, 26] }[info.kind];
+    boss = { kind: info.kind, name: info.boss, x: LW / 2, y: -40, ty: info.kind === 'weaver' ? 150 : 130, w, h, hp, max: hp,
+      t: 0, ph: 0, arrived: false, fireT: 1.5, ringT: 5, spawnT: 7, flash: 0, spinA: 0, spiralT: 0, fade: 1, warpT: 3, warping: false, nx: LW / 2 };
+    showBanner(info.boss, 'Boss');
     sfx.seeker();
   }
   function updateBoss(dt) {
     const b = boss, rage = b.hp < b.max / 2, v = 170 + 8 * run.wave;
     b.t += dt; b.flash = Math.max(0, b.flash - dt);
-    if (b.y < 130) { b.y += 60 * dt; return; }   // glide in first
-    b.x = LW / 2 + Math.sin(b.t * 0.6) * (LW / 2 - 60);
-    b.fireT -= dt; b.ringT -= dt; b.spawnT -= dt;
-    if (b.fireT <= 0 && player.alive) {           // aimed fan
-      const n = rage ? 5 : 3, a0 = Math.atan2(player.y - b.y, player.x - b.x);
-      for (let i = 0; i < n; i++) { const a = a0 + (i - (n - 1) / 2) * 0.16; eShots.push({ x: b.x, y: b.y + 22, vx: Math.cos(a) * v, vy: Math.sin(a) * v }); }
-      b.fireT = rage ? 1.1 : 1.6; sfx.bossShot();
+    if (!b.arrived) {                             // glide straight down; its pattern starts from the centre, so no jump
+      b.y += 60 * dt;
+      if (b.y >= b.ty) { b.y = b.ty; b.arrived = true; }
+      return;
     }
-    if (b.ringT <= 0) {                           // ring of shots
-      for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2 + b.t; eShots.push({ x: b.x, y: b.y, vx: Math.cos(a) * v * 0.7, vy: Math.sin(a) * v * 0.7 }); }
-      b.ringT = rage ? 4 : 6; sfx.bossShot();
+    b.ph += dt * (rage ? 0.8 : 0.6);
+    const fan = (n, spread, speed, extra = {}) => {
+      const a0 = Math.atan2(player.y - b.y, player.x - b.x);
+      for (let i = 0; i < n; i++) { const a = a0 + (i - (n - 1) / 2) * spread; eShots.push({ x: b.x, y: b.y + b.h, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, ...extra }); }
+    };
+    if (b.kind === 'monolith') {
+      b.x = LW / 2 + Math.sin(b.ph) * (LW / 2 - 60);
+      b.fireT -= dt; b.ringT -= dt; b.spawnT -= dt;
+      if (b.fireT <= 0 && player.alive) { fan(rage ? 5 : 3, 0.16, v); b.fireT = rage ? 1.1 : 1.6; sfx.bossShot(); }
+      if (b.ringT <= 0) {
+        for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2 + b.t; eShots.push({ x: b.x, y: b.y, vx: Math.cos(a) * v * 0.7, vy: Math.sin(a) * v * 0.7 }); }
+        b.ringT = rage ? 4 : 6; sfx.bossShot();
+      }
+      if (b.spawnT <= 0) {
+        for (const dx of [-40, 40]) addEnemy('diver', b.x + dx, b.y + 10, { state: 'hold', holdY: b.y + 10, wait: 0.5, vx: 0, vy: 90 });
+        b.spawnT = 8;
+      }
+    } else if (b.kind === 'weaver') {             // figure-eight path, spinning a spiral, then resting
+      b.x = LW / 2 + Math.sin(b.ph) * 120;
+      b.y = b.ty + Math.sin(b.ph * 2) * 40;
+      b.spiralT += dt; b.fireT -= dt;
+      const on = (b.spiralT % (rage ? 5 : 6)) < (rage ? 3.5 : 3.2);
+      if (on && b.fireT <= 0) {
+        const arms = rage ? 3 : 2;
+        for (let k = 0; k < arms; k++) { const a = b.spinA + k * Math.PI * 2 / arms; eShots.push({ x: b.x, y: b.y, vx: Math.cos(a) * 130, vy: Math.sin(a) * 130 }); }
+        b.spinA += 0.32; b.fireT = 0.11;
+      }
+    } else if (b.kind === 'carrier') {            // slow and heavy: launches escorts, lobs shells that split
+      b.x = LW / 2 + Math.sin(b.ph * 0.7) * (LW / 2 - 80);
+      b.fireT -= dt; b.spawnT -= dt;
+      if (b.fireT <= 0 && player.alive) { fan(1, 0, 120, { r: 5, split: 0.9 }); b.fireT = rage ? 1.3 : 1.9; sfx.bossShot(); }
+      if (b.spawnT <= 0) { spawnEvent(Math.random() < 0.5 ? 'line' : 'vee'); b.spawnT = rage ? 5 : 7; }
+    } else {                                      // eclipse: fades out, reappears elsewhere, calls down light columns
+      b.warpT -= dt;
+      if (b.warping) { b.fade -= dt * 2; if (b.fade <= 0) { b.fade = 0; b.x = b.nx; b.warping = false; } }
+      else if (b.fade < 1) b.fade = Math.min(1, b.fade + dt * 2);
+      else if (b.warpT <= 0) { b.warping = true; b.nx = rand(60, LW - 60); b.warpT = rage ? 3.5 : 5; }
+      b.fireT -= dt;
+      if (b.fade >= 1 && b.fireT <= 0 && player.alive) {
+        columns.push({ x: player.x, t: 0, warn: rage ? 0.7 : 0.9, on: 0.45 });
+        if (rage) fan(2, 0.18, v);
+        b.fireT = rage ? 1.2 : 1.8; sfx.bossShot();
+      }
     }
-    if (b.spawnT <= 0) {                          // sends two divers
-      for (const dx of [-40, 40]) addEnemy('diver', b.x + dx, b.y + 10, { state: 'hold', holdY: b.y + 10, wait: 0.5, vx: 0, vy: 90 });
-      b.spawnT = 8;
+  }
+  function updateColumns(dt) {                    // light columns: a thin warning line first, then the beam
+    for (let i = columns.length - 1; i >= 0; i--) {
+      const c = columns[i];
+      c.t += dt;
+      if (c.t > c.warn + c.on) { columns.splice(i, 1); continue; }
+      if (c.t > c.warn && player.alive && player.inv <= 0 && overTimer <= 0 && Math.abs(player.x - c.x) < 14) hitPlayer();
     }
   }
   function hitBoss(n) {
     const b = boss;
-    if (!b) return;
+    if (!b || (b.kind === 'eclipse' && b.fade < 0.5)) return;   // can't be hit while faded out
     b.hp -= n; b.flash = 0.1;
     registerHit(15, b.x, b.y, theme.text, false, 6);
     sfx.hit(run.mult);
     if (b.hp > 0) return;
-    const pts = 800 * (run.wave / 3);
+    const pts = 800 * (chapterOf(shell.game, run.wave) + 1);
     addScore(pts); updateHud();
     addFloater(b.x, b.y - 30, '+' + fmt(pts), theme.accent);
     burst(b.x, b.y, theme.text, 30); burst(b.x, b.y, theme.accent, 16);
     pickups.push({ kind: 'missile', x: b.x - 20, y: b.y }, { kind: 'shield', x: b.x + 20, y: b.y });
-    sfx.bossDown();
-    boss = null;
+    bossDefeated(b.name);
+    boss = null; columns = [];
   }
-  const inBoss = (x, y, pad) => boss && Math.abs(x - boss.x) <= 34 + pad && Math.abs(y - boss.y) <= 22 + pad;
+  const inBoss = (x, y, pad) => boss && !(boss.kind === 'eclipse' && boss.fade < 0.5) && Math.abs(x - boss.x) <= boss.w + pad && Math.abs(y - boss.y) <= boss.h + pad;
 
   // A wave is a timed list of formations; later waves are longer and denser
   function buildPlan() {
-    const w = run.wave, events = [], dur = 18 + 3 * Math.min(w, 8);
+    const w = easedWave(shell.game, run.wave), events = [], dur = 18 + 3 * Math.min(w, 8);
     let t = 0.6, lastGate = -10;
     while (t < dur) {
       const r = Math.random();
@@ -161,6 +208,7 @@
       if (shieldTimer <= 0) { pickups.push({ kind: 'shield', x: rand(40, LW - 40), y: -12 }); shieldTimer = rand(20, 30); }
     }
     moveWorld(dt);
+    updateColumns(dt);
     collide();
     if (intro <= 0 && planIdx >= plan.length && !enemies.length && !walls.length && !boss && !bossPending) {
       run.wave++;
@@ -283,6 +331,12 @@
     for (let i = eShots.length - 1; i >= 0; i--) {
       const s = eShots[i];
       s.x += s.vx * dt; s.y += s.vy * dt;
+      if (s.split !== undefined && (s.split -= dt) <= 0) {   // the Carrier's shells burst into three
+        eShots.splice(i, 1);
+        const a0 = Math.atan2(s.vy, s.vx);
+        for (const off of [-0.4, 0, 0.4]) eShots.push({ x: s.x, y: s.y, vx: Math.cos(a0 + off) * 170, vy: Math.sin(a0 + off) * 170 });
+        continue;
+      }
       if (s.y > LH + 10 || s.y < -10 || s.x < -10 || s.x > LW + 10) eShots.splice(i, 1);
     }
     for (let i = walls.length - 1; i >= 0; i--) { walls[i].y += sv * dt; if (walls[i].y > LH + 20) walls.splice(i, 1); }
@@ -371,7 +425,7 @@
         return;
       }
     }
-    for (const s of eShots) if ((s.x - player.x) ** 2 + (s.y - player.y) ** 2 < (PLAYER_R + 2) ** 2) { hitPlayer(); return; }
+    for (const s of eShots) if ((s.x - player.x) ** 2 + (s.y - player.y) ** 2 < (PLAYER_R + (s.r || 2)) ** 2) { hitPlayer(); return; }
   }
 
   /* ----- draw ----- */
@@ -412,16 +466,39 @@
       ctx.fillStyle = e.flash > 0 ? theme.muted : theme.text;
       drawShape(TYPES[e.type].shape, e.x, e.y, e.r * 2);
     }
-    if (boss) {                                  // the Monolith: a heavy block with two slit eyes
-      const { x, y } = boss;
-      ctx.fillStyle = boss.flash > 0 ? theme.muted : theme.text;
+    for (const c of columns) {                   // light columns: faint warning line, then a solid beam
+      if (c.t < c.warn) { ctx.globalAlpha = 0.25 + 0.35 * (c.t / c.warn); ctx.fillStyle = theme.text; ctx.fillRect(c.x - 0.75, 0, 1.5, LH); }
+      else { ctx.globalAlpha = 0.85; ctx.fillStyle = theme.text; ctx.fillRect(c.x - 10, 0, 20, LH); }
+      ctx.globalAlpha = 1;
+    }
+    if (boss) {
+      const b = boss, { x, y } = b;
+      ctx.fillStyle = b.flash > 0 ? theme.muted : theme.text;
       ctx.beginPath();
-      ctx.moveTo(x - 34, y - 22); ctx.lineTo(x + 34, y - 22); ctx.lineTo(x + 34, y + 8);
-      ctx.lineTo(x + 18, y + 22); ctx.lineTo(x - 18, y + 22); ctx.lineTo(x - 34, y + 8); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = theme.bg; ctx.fillRect(x - 20, y - 6, 14, 4); ctx.fillRect(x + 6, y - 6, 14, 4);
+      if (b.kind === 'monolith') {               // heavy block with two slit eyes
+        ctx.moveTo(x - 34, y - 22); ctx.lineTo(x + 34, y - 22); ctx.lineTo(x + 34, y + 8);
+        ctx.lineTo(x + 18, y + 22); ctx.lineTo(x - 18, y + 22); ctx.lineTo(x - 34, y + 8); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = theme.bg; ctx.fillRect(x - 20, y - 6, 14, 4); ctx.fillRect(x + 6, y - 6, 14, 4);
+      } else if (b.kind === 'weaver') {          // disc with a turning square window
+        ctx.arc(x, y, 24, 0, Math.PI * 2); ctx.fill();
+        ctx.save(); ctx.translate(x, y); ctx.rotate(b.spinA); ctx.fillStyle = theme.bg; ctx.fillRect(-7, -7, 14, 14); ctx.restore();
+      } else if (b.kind === 'carrier') {         // long hull with three hangar doors
+        for (const [px, py] of [[-58, -10], [-40, -24], [40, -24], [58, -10], [58, 10], [46, 24], [-46, 24], [-58, 10]]) ctx.lineTo(x + px, y + py);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = theme.bg; for (const dx of [-30, -8, 14]) ctx.fillRect(x + dx, y + 6, 16, 6);
+      } else {                                   // eclipse: a crescent that fades between places
+        if (b.warping) { ctx.strokeStyle = theme.muted; ctx.lineWidth = 1.25; ctx.globalAlpha = 0.6 * (1 - b.fade); ctx.beginPath(); ctx.arc(b.nx, y, 26, 0, Math.PI * 2); ctx.stroke(); }
+        ctx.globalAlpha = Math.max(0.08, b.fade);
+        ctx.beginPath(); ctx.arc(x, y, 26, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(x + 9, y - 5, 20, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
     }
     ctx.fillStyle = theme.text;
-    for (const s of eShots) ctx.fillRect(s.x - 1.5, s.y - 4, 3, 8);
+    for (const s of eShots) {
+      if (s.r) { ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill(); }
+      else ctx.fillRect(s.x - 1.5, s.y - 4, 3, 8);
+    }
 
     ctx.fillStyle = theme.accent;
     for (const s of shots) ctx.fillRect(s.x - 1.25, s.y, 2.5, SHOT_LEN);
@@ -464,7 +541,7 @@
       }
     }
 
-    if (boss) drawBossBar('The Monolith', boss.hp / boss.max, 46);
+    if (boss) drawBossBar(boss.name, boss.hp / boss.max, 46);
     // top left: missile slots (orange = ready), then shield slots (blue = active)
     for (let i = 0; i < MAX_MISSILES; i++) {
       ctx.fillStyle = i < missilesHeld ? theme.accent : theme.border;
@@ -483,3 +560,10 @@
     keysHint: 'Keyboard: arrow keys to move, space to fire, M to launch a missile, P to pause.',
     overText: best => best ? 'A new best score. That was a long way forward.' : 'The waves caught up with you this time.',
     bannerY: 300, extraLifeEvery: 15000, touchAnywhere: true,
+    chapterLength: 3,
+    chapters: [
+      { place: 'The Outer Ring', boss: 'The Monolith', kind: 'monolith' },
+      { place: 'The Drift', boss: 'The Weaver', kind: 'weaver' },
+      { place: 'The Shipyards', boss: 'The Carrier', kind: 'carrier' },
+      { place: 'The Far Dark', boss: 'The Eclipse', kind: 'eclipse' }
+    ],
