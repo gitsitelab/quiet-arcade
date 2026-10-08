@@ -2,7 +2,7 @@
   }
   function clearWorld() {
     shots = []; missiles = []; blasts = []; enemies = []; eShots = []; walls = []; pickups = [];
-    fireCd = 0; drag = null; lastTap = null; overTimer = 0; intro = 0;
+    fireCd = 0; drag = null; lastTap = null; overTimer = 0; intro = 0; boss = null; bossPending = false;
   }
   function reset() {              // idle scene behind the menus
     clearWorld();
@@ -24,8 +24,52 @@
   function beginWave() {
     plan = buildPlan(); planIdx = 0; planT = 0;
     intro = INTRO_TIME;
+    bossPending = run.wave % 3 === 0;             // every third wave ends with the Monolith
+    if (bossPending) plan = plan.filter(e => e.t < 9);
     showBanner('Wave ' + run.wave);
   }
+  function spawnBoss() {
+    const hp = 40 + 20 * (run.wave / 3);
+    boss = { x: LW / 2, y: -40, hp, max: hp, t: 0, fireT: 1.5, ringT: 5, spawnT: 7, flash: 0 };
+    showBanner('The Monolith');
+    sfx.seeker();
+  }
+  function updateBoss(dt) {
+    const b = boss, rage = b.hp < b.max / 2, v = 170 + 8 * run.wave;
+    b.t += dt; b.flash = Math.max(0, b.flash - dt);
+    if (b.y < 130) { b.y += 60 * dt; return; }   // glide in first
+    b.x = LW / 2 + Math.sin(b.t * 0.6) * (LW / 2 - 60);
+    b.fireT -= dt; b.ringT -= dt; b.spawnT -= dt;
+    if (b.fireT <= 0 && player.alive) {           // aimed fan
+      const n = rage ? 5 : 3, a0 = Math.atan2(player.y - b.y, player.x - b.x);
+      for (let i = 0; i < n; i++) { const a = a0 + (i - (n - 1) / 2) * 0.16; eShots.push({ x: b.x, y: b.y + 22, vx: Math.cos(a) * v, vy: Math.sin(a) * v }); }
+      b.fireT = rage ? 1.1 : 1.6; sfx.bossShot();
+    }
+    if (b.ringT <= 0) {                           // ring of shots
+      for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2 + b.t; eShots.push({ x: b.x, y: b.y, vx: Math.cos(a) * v * 0.7, vy: Math.sin(a) * v * 0.7 }); }
+      b.ringT = rage ? 4 : 6; sfx.bossShot();
+    }
+    if (b.spawnT <= 0) {                          // sends two divers
+      for (const dx of [-40, 40]) addEnemy('diver', b.x + dx, b.y + 10, { state: 'hold', holdY: b.y + 10, wait: 0.5, vx: 0, vy: 90 });
+      b.spawnT = 8;
+    }
+  }
+  function hitBoss(n) {
+    const b = boss;
+    if (!b) return;
+    b.hp -= n; b.flash = 0.1;
+    registerHit(15, b.x, b.y, theme.text, false, 6);
+    sfx.hit(run.mult);
+    if (b.hp > 0) return;
+    const pts = 800 * (run.wave / 3);
+    addScore(pts); updateHud();
+    addFloater(b.x, b.y - 30, '+' + fmt(pts), theme.accent);
+    burst(b.x, b.y, theme.text, 30); burst(b.x, b.y, theme.accent, 16);
+    pickups.push({ kind: 'missile', x: b.x - 20, y: b.y }, { kind: 'shield', x: b.x + 20, y: b.y });
+    sfx.bossDown();
+    boss = null;
+  }
+  const inBoss = (x, y, pad) => boss && Math.abs(x - boss.x) <= 34 + pad && Math.abs(y - boss.y) <= 22 + pad;
 
   // A wave is a timed list of formations; later waves are longer and denser
   function buildPlan() {
@@ -109,6 +153,8 @@
     else {
       planT += dt;
       while (planIdx < plan.length && plan[planIdx].t <= planT) spawnEvent(plan[planIdx++].type);
+      if (bossPending && planIdx >= plan.length && !enemies.length && !walls.length) { bossPending = false; spawnBoss(); }
+      if (boss) updateBoss(dt);
       pickupTimer -= dt;
       if (pickupTimer <= 0) { pickups.push({ kind: 'missile', x: rand(40, LW - 40), y: -12 }); pickupTimer = rand(14, 22); }
       shieldTimer -= dt;
@@ -116,7 +162,7 @@
     }
     moveWorld(dt);
     collide();
-    if (intro <= 0 && planIdx >= plan.length && !enemies.length && !walls.length) {
+    if (intro <= 0 && planIdx >= plan.length && !enemies.length && !walls.length && !boss && !bossPending) {
       run.wave++;
       eShots = [];
       beginWave();
@@ -151,7 +197,7 @@
   }
 
   function nearestEnemy(x, y) {
-    let best = null, bd = Infinity;
+    let best = boss && boss.y > 0 ? boss : null, bd = best ? (boss.x - x) ** 2 + (boss.y - y) ** 2 : Infinity;
     for (const e of enemies) {
       if (e.y < 0) continue;
       const d = (e.x - x) ** 2 + (e.y - y) ** 2;
@@ -174,7 +220,7 @@
       m.x += Math.cos(m.a) * m.sp * dt;
       m.y += Math.sin(m.a) * m.sp * dt;
       if (!reduceMotion) fx.particles.push({ x: m.x, y: m.y, vx: 0, vy: 0, life: 0.25, max: 0.25, size: 2, color: theme.accent });
-      const hit = enemies.some(e => (e.x - m.x) ** 2 + (e.y - m.y) ** 2 < (e.r + 6) ** 2);
+      const hit = enemies.some(e => (e.x - m.x) ** 2 + (e.y - m.y) ** 2 < (e.r + 6) ** 2) || inBoss(m.x, m.y, 4);
       if (hit || m.t > 2.4 || m.y < -20 || m.x < -20 || m.x > LW + 20) { explode(m.x, m.y); missiles.splice(i, 1); }
     }
   }
@@ -187,6 +233,7 @@
       if ((e.x - x) ** 2 + (e.y - y) ** 2 < (BLAST_R + e.r) ** 2) damage(i, 6);
     }
     eShots = eShots.filter(s => (s.x - x) ** 2 + (s.y - y) ** 2 > BLAST_R * BLAST_R);
+    if (inBoss(x, y, BLAST_R)) hitBoss(6);
   }
   function updateBlasts(dt) {
     for (let i = blasts.length - 1; i >= 0; i--) { blasts[i].t += dt; if (blasts[i].t >= blasts[i].max) blasts.splice(i, 1); }
@@ -284,6 +331,7 @@
     for (let i = shots.length - 1; i >= 0; i--) {
       const s = shots[i];
       for (const w of walls) if (s.x >= w.x && s.x <= w.x + w.w && s.y <= w.y + w.h && s.y + SHOT_LEN >= w.y) { shots.splice(i, 1); continue outer; }
+      if (inBoss(s.x, s.y + SHOT_LEN / 2, 2)) { shots.splice(i, 1); hitBoss(1); continue; }
       for (let j = enemies.length - 1; j >= 0; j--) {
         const e = enemies[j];
         if (Math.abs(s.x - e.x) <= e.r + 2 && s.y <= e.y + e.r && s.y + SHOT_LEN >= e.y - e.r) {
@@ -313,6 +361,7 @@
     }
     if (player.inv > 0 || overTimer > 0) return;
     for (const w of walls) if (circleRect(player.x, player.y, PLAYER_R, w)) { hitPlayer(); return; }
+    if (inBoss(player.x, player.y, PLAYER_R)) { hitPlayer(); return; }
     for (let j = enemies.length - 1; j >= 0; j--) {
       const e = enemies[j];
       if ((e.x - player.x) ** 2 + (e.y - player.y) ** 2 < (e.r + PLAYER_R) ** 2) {
@@ -363,6 +412,14 @@
       ctx.fillStyle = e.flash > 0 ? theme.muted : theme.text;
       drawShape(TYPES[e.type].shape, e.x, e.y, e.r * 2);
     }
+    if (boss) {                                  // the Monolith: a heavy block with two slit eyes
+      const { x, y } = boss;
+      ctx.fillStyle = boss.flash > 0 ? theme.muted : theme.text;
+      ctx.beginPath();
+      ctx.moveTo(x - 34, y - 22); ctx.lineTo(x + 34, y - 22); ctx.lineTo(x + 34, y + 8);
+      ctx.lineTo(x + 18, y + 22); ctx.lineTo(x - 18, y + 22); ctx.lineTo(x - 34, y + 8); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = theme.bg; ctx.fillRect(x - 20, y - 6, 14, 4); ctx.fillRect(x + 6, y - 6, 14, 4);
+    }
     ctx.fillStyle = theme.text;
     for (const s of eShots) ctx.fillRect(s.x - 1.5, s.y - 4, 3, 8);
 
@@ -407,6 +464,7 @@
       }
     }
 
+    if (boss) drawBossBar('The Monolith', boss.hp / boss.max, 46);
     // top left: missile slots (orange = ready), then shield slots (blue = active)
     for (let i = 0; i < MAX_MISSILES; i++) {
       ctx.fillStyle = i < missilesHeld ? theme.accent : theme.border;
