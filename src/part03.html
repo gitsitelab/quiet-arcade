@@ -8,7 +8,8 @@
   const SHIELD_W = SHIELD_COLS * CELL, SHIELD_H = SHIELD_ROWS * CELL;
   const GROUND_Y = 612, DRAG_GAIN = 1.15;
 
-  let player, fireCd, shot, eShots, enemies, alive, grid, shields, bonus, bonusTimer, intro, overTimer, animT, drag, boss;
+  let player, fireCd, shot, eShots, enemies, alive, grid, shields, bonus, bonusTimer, intro, overTimer, animT, drag;
+  let bosses = [], drones = [], bossName = '', bossMax = 1;
 
   const ex = e => grid.ox + e.c * CELL_W + CELL_W / 2;
   const ey = e => grid.oy + e.r * CELL_H + CELL_H / 2;
@@ -19,15 +20,32 @@
     for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) enemies.push({ r, c, alive: true });
     alive = TOTAL;
     grid = { ox: (LW - COLS * CELL_W) / 2, oy: 64 + Math.min(run.wave - 1, 5) * 10, dir: 1, fireTimer: 1.4 };
-    shot = null; eShots = []; bonus = null; boss = null;
+    shot = null; eShots = []; bonus = null; bosses = []; drones = [];
     bonusTimer = rand(12, 20);
     intro = withBanner ? INTRO_TIME : 0;
-    if (withBanner && run.wave % 3 === 0) {   // every third wave: the Warden instead of a formation
+    if (withBanner && run.wave % 3 === 0) {   // every third wave: the chapter's boss instead of a formation
       enemies.forEach(e => { e.alive = false; }); alive = 0;
-      const hp = 16 + 8 * (run.wave / 3);
-      boss = { x: LW / 2, y: 104, hp, max: hp, t: 0, fireT: 1.6, flash: 0, n: 0 };
-      showBanner('The Warden');
-    } else if (withBanner) showBanner('Wave ' + run.wave);
+      spawnBosses();
+    } else if (withBanner) waveBanner(shell.game);
+  }
+  // Four bosses, each testing something different: dodging spreads (Warden), shooting
+  // down chasers (Hive), timing shots through a rotating shield (Lantern), and
+  // handling two threats at once (Twins).
+  function spawnBosses() {
+    const idx = chapterOf(shell.game, run.wave), info = chapterInfo(shell.game, idx);
+    const hp = Math.round((16 + 6 * idx) * (1 + 0.4 * info.tier));
+    const base = { y: -40, ty: 104, phase: 0, fireT: 1.6, flash: 0, n: 0, kind: info.kind, spawnT: 2.5, orbitA: 0 };
+    if (info.kind === 'twins') {
+      const each = Math.ceil(hp * 0.6);
+      bosses = [-1, 1].map(side => ({ ...base, side, x: LW / 2 + side * 70, w: 30, h: 16, hp: each, max: each, fireT: side > 0 ? 1.2 : 1.9 }));
+    } else {
+      const lantern = info.kind === 'lantern';
+      bosses = [{ ...base, side: 0, x: LW / 2, w: lantern ? 24 : 44, h: lantern ? 24 : 18, hp, max: hp,
+        orbit: lantern ? [0, 1, 2].map(i => ({ a: i * Math.PI * 2 / 3, hp: 3, regrow: 0 })) : null }];
+    }
+    bossName = info.boss;
+    bossMax = bosses.reduce((t, b) => t + b.max, 0);
+    showBanner(info.boss, 'Boss');
   }
   function buildShields() {
     shields = [0.2, 0.5, 0.8].map(f => {
@@ -63,44 +81,79 @@
     if (!player.alive) return;                // and while the ship respawns
     updateGrid(dt);
     updateEnemyFire(dt);
-    updateBoss(dt);
+    updateBosses(dt);
+    updateDrones(dt);
     updateEnemyShots(dt);
     updateBonus(dt);
   }
 
-  function updateBoss(dt) {
-    if (!boss) return;
-    const b = boss, rage = b.hp < b.max / 2;    // below half health: faster and wider
-    b.t += dt; b.flash = Math.max(0, b.flash - dt);
-    b.x = LW / 2 + Math.sin(b.t * (rage ? 0.95 : 0.65)) * (LW / 2 - 60);
-    b.y = 104 + Math.sin(b.t * 1.7) * 8;
-    b.fireT -= dt;
-    if (b.fireT > 0 || !player.alive) return;
-    b.n++;
-    const v = Math.min(260, 160 + 10 * run.wave);
-    if (b.n % 3 === 0) {                        // aimed pair
-      const a = Math.atan2(PLAYER_Y - b.y, player.x - b.x);
-      for (const off of [-0.08, 0.08]) eShots.push({ x: b.x, y: b.y + 20, vx: Math.cos(a + off) * v, vy: Math.sin(a + off) * v });
-    } else {                                    // spread
-      const n = rage ? 5 : 3;
-      for (let i = 0; i < n; i++) { const a = Math.PI / 2 + (i - (n - 1) / 2) * 0.28; eShots.push({ x: b.x, y: b.y + 20, vx: Math.cos(a) * v, vy: Math.sin(a) * v }); }
+  function updateBosses(dt) {
+    if (!bosses.length) return;
+    const left = bosses.reduce((t, b) => t + b.hp, 0), v = Math.min(260, 160 + 10 * run.wave);
+    for (const b of bosses) {
+      b.flash = Math.max(0, b.flash - dt);
+      if (b.y < b.ty) { b.y = Math.min(b.ty, b.y + 90 * dt); continue; }   // glide in, then start moving from where it is
+      const rage = b.kind === 'twins' ? bosses.length === 1 : left < bossMax / 2;
+      b.phase += dt * (rage ? 0.95 : 0.65) * (b.kind === 'hive' ? 0.7 : 1);
+      b.x = b.side ? LW / 2 + b.side * (70 + Math.sin(b.phase) * 60) : LW / 2 + Math.sin(b.phase) * (LW / 2 - 60);
+      b.y = b.ty + Math.sin(b.phase * 2.6) * 8;
+      b.orbitA += dt * (rage ? 2.2 : 1.4);
+      if (b.orbit) for (const o of b.orbit) if (o.hp <= 0) { o.regrow -= dt; if (o.regrow <= 0) o.hp = 3; }
+      if (b.kind === 'hive') {                  // releases chasing drones
+        b.spawnT -= dt;
+        if (b.spawnT <= 0) { for (const dx of [-26, 0, 26]) drones.push({ x: b.x + dx, y: b.y + 16, vy: 70 + 4 * run.wave, t: rand(0, 6) }); b.spawnT = rage ? 2.6 : 3.6; }
+      }
+      b.fireT -= dt;
+      if (b.fireT > 0 || !player.alive) continue;
+      b.n++;
+      const aimed = (spread, from) => {
+        const a = Math.atan2(PLAYER_Y - b.y, player.x - b.x);
+        for (const off of spread) eShots.push({ x: b.x, y: b.y + from, vx: Math.cos(a + off) * v, vy: Math.sin(a + off) * v });
+      };
+      if (b.kind === 'warden') {                // spreads, with an aimed pair every third volley
+        if (b.n % 3 === 0) aimed([-0.08, 0.08], 20);
+        else { const n = rage ? 5 : 3; for (let i = 0; i < n; i++) { const a = Math.PI / 2 + (i - (n - 1) / 2) * 0.28; eShots.push({ x: b.x, y: b.y + 20, vx: Math.cos(a) * v, vy: Math.sin(a) * v }); } }
+        b.fireT = rage ? 0.9 : 1.3;
+      } else if (b.kind === 'hive') {
+        aimed([0], 18); b.fireT = rage ? 1.1 : 1.6;
+      } else if (b.kind === 'lantern') {        // a wide fan of slow light
+        const n = rage ? 9 : 7;
+        for (let i = 0; i < n; i++) { const a = Math.PI * (0.18 + 0.64 * i / (n - 1)); eShots.push({ x: b.x, y: b.y + 20, vx: Math.cos(a) * v * 0.75, vy: Math.sin(a) * v * 0.75 }); }
+        b.fireT = rage ? 1.5 : 2.1;
+      } else {                                  // twins take turns, faster once alone
+        aimed([0], 16); b.fireT = rage ? 0.7 : 1.4;
+      }
+      sfx.bossShot();
     }
-    b.fireT = rage ? 0.9 : 1.3;
-    sfx.bossShot();
   }
-  function hitBoss() {
-    const b = boss;
+  function updateDrones(dt) {                   // the Hive's chasers drift down towards the ship
+    for (let i = drones.length - 1; i >= 0; i--) {
+      const d = drones[i];
+      d.t += dt; d.y += d.vy * dt;
+      d.x += clamp(player.x - d.x, -30, 30) * dt + Math.sin(d.t * 3) * 20 * dt;
+      const h = shieldCellAt(d.x, d.y + 5);
+      if (h) { erode(h); drones.splice(i, 1); continue; }
+      if (player.alive && player.inv <= 0 && Math.abs(d.x - player.x) < 14 && Math.abs(d.y - PLAYER_Y) < 12) {
+        drones.splice(i, 1); run.lives = Math.max(0, run.lives - 1); destroyPlayer(); return;
+      }
+      if (d.y > GROUND_Y) drones.splice(i, 1);
+    }
+  }
+  function hitBoss(b) {
     b.hp -= 1; b.flash = 0.08;
     registerHit(10, b.x, b.y, theme.text, false, 6);
     sfx.hit(run.mult);
     if (b.hp > 0) return;
-    const pts = 500 * (run.wave / 3);
+    burst(b.x, b.y, theme.text, 30); burst(b.x, b.y, theme.accent, 16);
+    bosses = bosses.filter(o => o !== b);
+    if (bosses.length) { sfx.boom(); return; }  // one twin down: the other fights on, angrier
+    const pts = 500 * (chapterOf(shell.game, run.wave) + 1);
     addScore(pts); updateHud();
     addFloater(b.x, b.y - 30, '+' + fmt(pts), theme.accent);
-    burst(b.x, b.y, theme.text, 30); burst(b.x, b.y, theme.accent, 16);
-    sfx.bossDown();
-    boss = null;
+    bossDefeated(bossName);
+    drones = [];
     run.wave++; buildWave(true); buildShields();
+    intro += BANNER_TIME;                       // a breather while the banners play
   }
 
   function updatePlayer(dt) {
@@ -127,7 +180,25 @@
     if (h) { erode(h); shot = null; resetCombo(); return; }   // own shield = miss
 
     const top = shot.y, bottom = y0 + SHOT_LEN, half = ENEMY_SIZE / 2;
-    if (boss && Math.abs(shot.x - boss.x) <= 44 && top <= boss.y + 18 && bottom >= boss.y - 18) { shot = null; hitBoss(); return; }
+    for (const b of bosses) {
+      if (b.orbit) for (const o of b.orbit) {   // the Lantern's orbiting blocks soak up shots
+        if (o.hp <= 0) continue;
+        const a = b.orbitA + o.a, ox = b.x + Math.cos(a) * 40, oy = b.y + Math.sin(a) * 32;
+        if (Math.abs(shot.x - ox) <= 8 && top <= oy + 8 && bottom >= oy - 8) {
+          shot = null; o.hp--; if (o.hp <= 0) { o.regrow = 7; burst(ox, oy, theme.text, 8); }
+          sfx.tick(); resetCombo(); return;
+        }
+      }
+      if (b.y >= b.ty && Math.abs(shot.x - b.x) <= b.w && top <= b.y + b.h && bottom >= b.y - b.h) { shot = null; hitBoss(b); return; }
+    }
+    for (let i = drones.length - 1; i >= 0; i--) {
+      const d = drones[i];
+      if (Math.abs(shot.x - d.x) <= 8 && top <= d.y + 7 && bottom >= d.y - 7) {
+        drones.splice(i, 1); shot = null;
+        registerHit(10, d.x, d.y, theme.text, false, 6); sfx.hit(run.mult);
+        return;
+      }
+    }
     for (const e of enemies) {
       if (!e.alive) continue;
       const x = ex(e), y = ey(e);
@@ -151,7 +222,7 @@
 
   function gridSpeed() {
     const frac = 1 - alive / TOTAL;
-    return Math.min(270, (18 + 7 * (run.wave - 1)) * (1 + frac + 3 * frac * frac));
+    return Math.min(270, (18 + 7 * (easedWave(shell.game, run.wave) - 1)) * (1 + frac + 3 * frac * frac));
   }
 
   function updateGrid(dt) {
@@ -226,7 +297,7 @@
 
   function destroyPlayer() {
     player.alive = false; player.respawn = 1.2;
-    eShots = [];
+    eShots = []; drones = [];
     resetCombo();
     burst(player.x, PLAYER_Y, theme.accent, 24);
     shakeScreen();
@@ -290,16 +361,37 @@
       const bob = reduceMotion ? 0 : ((frame + e.c) % 2 ? -1 : 1);
       drawShape(ROW_SHAPES[e.r], ex(e), ey(e) + bob, ENEMY_SIZE);
     }
-    if (boss) {                                  // the Warden: a wide hexagon with three guns and a hollow core
-      const { x, y } = boss;
-      ctx.fillStyle = boss.flash > 0 ? theme.muted : theme.text;
+    for (const b of bosses) {
+      const { x, y } = b;
+      ctx.fillStyle = b.flash > 0 ? theme.muted : theme.text;
       ctx.beginPath();
-      ctx.moveTo(x - 44, y); ctx.lineTo(x - 28, y - 18); ctx.lineTo(x + 28, y - 18);
-      ctx.lineTo(x + 44, y); ctx.lineTo(x + 28, y + 18); ctx.lineTo(x - 28, y + 18); ctx.closePath(); ctx.fill();
-      ctx.fillRect(x - 30, y + 16, 6, 8); ctx.fillRect(x - 3, y + 17, 6, 10); ctx.fillRect(x + 24, y + 16, 6, 8);
-      ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
-      drawBossBar('The Warden', boss.hp / boss.max, 30);
+      if (b.kind === 'warden') {                 // wide hexagon, three guns, hollow core
+        ctx.moveTo(x - 44, y); ctx.lineTo(x - 28, y - 18); ctx.lineTo(x + 28, y - 18);
+        ctx.lineTo(x + 44, y); ctx.lineTo(x + 28, y + 18); ctx.lineTo(x - 28, y + 18); ctx.closePath(); ctx.fill();
+        ctx.fillRect(x - 30, y + 16, 6, 8); ctx.fillRect(x - 3, y + 17, 6, 10); ctx.fillRect(x + 24, y + 16, 6, 8);
+        ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+      } else if (b.kind === 'hive') {            // octagon with a row of hollow cells
+        for (const [px, py] of [[-44, -8], [-30, -20], [30, -20], [44, -8], [44, 8], [30, 20], [-30, 20], [-44, 8]]) ctx.lineTo(x + px, y + py);
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = theme.bg;
+        for (const dx of [-18, 0, 18]) { ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; ctx.lineTo(x + dx + Math.cos(a) * 5.5, y + Math.sin(a) * 5.5); } ctx.closePath(); ctx.fill(); }
+      } else if (b.kind === 'lantern') {         // round lamp with an eye, guarded by orbiting blocks
+        ctx.arc(x, y, 24, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(x, y, 13, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = theme.text; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+        for (const o of b.orbit) {
+          if (o.hp <= 0) continue;
+          const a = b.orbitA + o.a, ox = x + Math.cos(a) * 40, oy = y + Math.sin(a) * 32;
+          ctx.globalAlpha = 0.45 + 0.18 * o.hp; ctx.fillRect(ox - 6, oy - 6, 12, 12); ctx.globalAlpha = 1;
+        }
+      } else {                                   // a twin: flat diamond with a slit
+        ctx.moveTo(x - 30, y); ctx.lineTo(x, y - 16); ctx.lineTo(x + 30, y); ctx.lineTo(x, y + 16); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = theme.bg; ctx.fillRect(x - 10, y - 2, 20, 4);
+      }
     }
+    ctx.fillStyle = theme.text;
+    for (const d of drones) { ctx.beginPath(); ctx.arc(d.x, d.y, 6, 0, Math.PI * 2); ctx.fill(); }
+    if (bosses.length) drawBossBar(bossName, bosses.reduce((t, b) => t + b.hp, 0) / bossMax, 30);
     if (bonus) {
       ctx.fillStyle = theme.accent;
       ctx.beginPath();
@@ -324,6 +416,13 @@
     keysHint: 'Keyboard: arrow keys to move, space to fire, P to pause.',
     overText: best => best ? 'A new best score. The formation finally got through.' : 'The formation broke through this time.',
     bannerY: 370, extraLifeEvery: 0,
+    chapterLength: 3,
+    chapters: [
+      { place: 'First Contact', boss: 'The Warden', kind: 'warden' },
+      { place: 'The Swarm', boss: 'The Hive', kind: 'hive' },
+      { place: 'Lantern Fleet', boss: 'The Lantern', kind: 'lantern' },
+      { place: 'The Mothership', boss: 'The Twins', kind: 'twins' }
+    ],
     reset, start, update, draw, pointerDown, pointerMove, release
   };
 })();
