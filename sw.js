@@ -1,7 +1,7 @@
 // Quiet Arcade offline cache.
 // Change VERSION whenever you upload a new index.html, so phones pick up the update.
 // Updates are published from single-file commits, which reliably start the build.
-const VERSION = 'quiet-arcade-v3';
+const VERSION = 'quiet-arcade-v4';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
