@@ -416,7 +416,7 @@ const Headway = (() => {
   };
 
   let player, shots, missiles, blasts, enemies, eShots, walls, pickups, stars, dashOff;
-  let plan, planIdx, planT, pickupTimer, shieldTimer, intro, overTimer, fireCd, missilesHeld, shieldCharges, drag, lastTap;
+  let plan, planIdx, planT, pickupTimer, shieldTimer, intro, overTimer, fireCd, missilesHeld, shieldCharges, drag, lastTap, boss, bossPending;
 
   const scrollSpeed = () => Math.min(160, 70 + 10 * (run.wave - 1));
   const newPlayer = () => ({ x: LW / 2, y: LH - 80, alive: true, respawn: 0, inv: 2 });
