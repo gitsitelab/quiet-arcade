@@ -613,9 +613,9 @@ const Snake = (() => {
 })();
 
 const GAMES = { drift: DriftDefense, fracture: FractureField, layline: Layline, headway: Headway, switchback: Switchback, snake: Snake };
-// Names players see. Each module above keeps its working title in code; ids and saved scores are unchanged.
-const NAMES = { drift: 'Space Defence', fracture: 'Space Rocks', layline: 'Falling Blocks', headway: "Shoot 'em Up", switchback: 'Tower Defence', snake: 'Snake' };
-for (const id in NAMES) GAMES[id].name = NAMES[id];
+// Names players see come from the game picker, so renaming a game only means changing its tile.
+// Each module above keeps its working title in code; ids and saved scores are unchanged.
+document.querySelectorAll('[data-game]').forEach(b => { const g = GAMES[b.dataset.game]; if (g) g.name = b.querySelector('.cname').textContent; });
 
 /* =====================================================================
    INPUT — pointer on the lower half goes to the active game; keyboard
