@@ -9,13 +9,17 @@ const Switchback = (() => {
   const TOWERS = {
     dart:  { name: 'Dart',  cost: 50,  range: 84,  rate: 0.45, dmg: 1 },
     frost: { name: 'Frost', cost: 70,  range: 70,  rate: 1.2,  dmg: 0.5, slow: 0.45, slowT: 1.1 },
-    burst: { name: 'Burst', cost: 100, range: 112, rate: 1.6,  dmg: 2.2, splash: 36 }
+    arc:   { name: 'Arc',   cost: 90,  range: 80,  rate: 0.9,  dmg: 1.2, chain: 3 },
+    burst: { name: 'Burst', cost: 100, range: 112, rate: 1.6,  dmg: 2.2, splash: 36 },
+    lance: { name: 'Lance', cost: 120, range: 170, rate: 2.2,  dmg: 6 }       // pierces armour, aims at the toughest
   };
-  const ORDER = ['dart', 'frost', 'burst'];
+  const ORDER = ['dart', 'frost', 'arc', 'burst', 'lance'];
   const FOES = {
-    walker: { shape: 'circle',   r: 8,  hp: 3,  speed: 36, coins: 6,  pts: 10, leak: 1 },
-    runner: { shape: 'triangle', r: 8,  hp: 2,  speed: 66, coins: 5,  pts: 15, leak: 1 },
-    brute:  { shape: 'square',   r: 10, hp: 10, speed: 24, coins: 15, pts: 40, leak: 2 }
+    walker:   { shape: 'circle',   r: 8,  hp: 3,  speed: 36, coins: 4,  pts: 10,  leak: 1 },
+    runner:   { shape: 'triangle', r: 8,  hp: 2,  speed: 66, coins: 4,  pts: 15,  leak: 1 },
+    brute:    { shape: 'square',   r: 10, hp: 10, speed: 24, coins: 10, pts: 40,  leak: 2 },
+    armored:  { shape: 'hex',      r: 9,  hp: 6,  speed: 30, coins: 8,  pts: 30,  leak: 2, armor: 1 },
+    colossus: { shape: 'boss',     r: 15, hp: 60, speed: 17, coins: 60, pts: 400, leak: 5, armor: 1 }
   };
   const SANS = '-apple-system, system-ui, sans-serif';
 
@@ -40,7 +44,7 @@ const Switchback = (() => {
     }
   }
 
-  let towers, foes, bullets, rings, coins, lives, waveActive, queue, spawnT, countdown, sel, overTimer, touch;
+  let towers, foes, bullets, rings, beams, coins, lives, waveActive, queue, spawnT, countdown, sel, overTimer, touch;
 
   /* ----- setup ----- */
   const towerAt = (c, r) => towers.find(t => t.c === c && t.r === r);
@@ -50,12 +54,12 @@ const Switchback = (() => {
     return t;
   }
   function addFoe(type, d) {
-    const f = FOES[type], hpMul = 1 + 0.25 * (run.wave - 1) + 0.02 * (run.wave - 1) ** 2;
+    const f = FOES[type], hpMul = 1 + 0.32 * (run.wave - 1) + 0.045 * (run.wave - 1) ** 2;
     const [x, y, a] = posAt(d);
     foes.push({ type, d, x, y, a, hp: f.hp * hpMul, max: f.hp * hpMul, slow: 1, slowT: 0, flash: 0, dead: false });
   }
   function clear() {
-    towers = []; foes = []; bullets = []; rings = [];
+    towers = []; foes = []; bullets = []; rings = []; beams = [];
     coins = 150; lives = 10; waveActive = false; queue = []; spawnT = 0;
     sel = null; overTimer = 0; touch = null;
   }
@@ -70,22 +74,25 @@ const Switchback = (() => {
   /* ----- waves ----- */
   function startWave() {
     if (waveActive || overTimer > 0) return;
-    const w = run.wave, n = 6 + 2 * w;
+    const w = run.wave, n = 8 + 3 * w;
     queue = [];
-    for (let i = 0; i < n; i++) queue.push(w >= 3 && i % 5 === 4 ? 'brute' : w >= 2 && i % 3 === 1 ? 'runner' : 'walker');
+    for (let i = 0; i < n; i++) {
+      queue.push(w >= 4 && i % 4 === 3 ? 'armored' : w >= 3 && i % 5 === 4 ? 'brute' : w >= 2 && i % 3 === 1 ? 'runner' : 'walker');
+    }
+    if (w % 5 === 0) queue.push('colossus');      // every fifth wave ends with the Colossus
     waveActive = true; spawnT = 0;
-    showBanner('Wave ' + w);
+    showBanner(w % 5 === 0 ? 'The Colossus' : 'Wave ' + w);
     sfx.wave();
   }
   function endWave() {
     waveActive = false;
-    const bonus = 20 + 5 * run.wave;
+    const bonus = 15 + 4 * run.wave;
     coins += bonus;
     addScore(50 * run.wave); updateHud();
     addFloater(LW / 2, GY + 20, '+' + bonus + ' coins', theme.accent);
     sfx.bonus();
     run.wave++;
-    countdown = 8;
+    countdown = 6;
   }
 
   /* ----- building ----- */
@@ -115,8 +122,10 @@ const Switchback = (() => {
   }
 
   /* ----- update ----- */
-  function damage(f, n) {
+  function damage(f, n, pierce) {
     if (f.dead) return;
+    const armor = FOES[f.type].armor || 0;
+    if (armor && !pierce) n = Math.max(n * 0.3, n - armor);   // armour blunts weak hits
     f.hp -= n; f.flash = 0.08;
     if (f.hp > 0) return;
     f.dead = true;
@@ -133,12 +142,13 @@ const Switchback = (() => {
 
   function update(dt) {
     for (let i = rings.length - 1; i >= 0; i--) { rings[i].t += dt; if (rings[i].t >= rings[i].max) rings.splice(i, 1); }
+    for (let i = beams.length - 1; i >= 0; i--) { beams[i].t += dt; if (beams[i].t >= beams[i].max) beams.splice(i, 1); }
     if (overTimer > 0) { overTimer -= dt; if (overTimer <= 0) endGame(); return; }
 
     if (!waveActive) { countdown -= dt; if (countdown <= 0) startWave(); }
     else {
       spawnT -= dt;
-      if (spawnT <= 0 && queue.length) { addFoe(queue.shift(), 0); spawnT = Math.max(0.45, 1.1 - 0.04 * run.wave); }
+      if (spawnT <= 0 && queue.length) { addFoe(queue.shift(), 0); spawnT = Math.max(0.38, 1.0 - 0.04 * run.wave); }
     }
 
     // foes walk the road
@@ -172,6 +182,34 @@ const Switchback = (() => {
           t.cd = spec.rate;
           sfx.frost();
         }
+        continue;
+      }
+      if (t.type === 'lance') {                  // instant piercing shot at the toughest foe in range
+        let target = null;
+        for (const f of foes) if (!f.dead && (f.x - t.x) ** 2 + (f.y - t.y) ** 2 <= range * range && (!target || f.hp > target.hp)) target = f;
+        if (!target) continue;
+        t.angle = Math.atan2(target.y - t.y, target.x - t.x);
+        if (t.cd > 0) continue;
+        beams.push({ pts: [[t.x, t.y], [target.x, target.y]], t: 0, max: 0.25, color: theme.accent, w: 2 });
+        damage(target, dmg, true);
+        t.cd = spec.rate; sfx.lance();
+        continue;
+      }
+      if (t.type === 'arc') {                    // lightning that jumps between nearby foes
+        let cur = firstInRange(t.x, t.y, range);
+        if (!cur || t.cd > 0) continue;
+        const hit = [], path = [[t.x, t.y]];
+        for (let k = 0; k < spec.chain + t.level - 1 && cur; k++) {
+          hit.push(cur);
+          const [px, py] = path[path.length - 1];
+          path.push([(px + cur.x) / 2 + rand(-6, 6), (py + cur.y) / 2 + rand(-6, 6)], [cur.x, cur.y]);
+          let next = null, nd = 60 * 60;
+          for (const f of foes) { const d = (f.x - cur.x) ** 2 + (f.y - cur.y) ** 2; if (!f.dead && !hit.includes(f) && d < nd) { nd = d; next = f; } }
+          cur = next;
+        }
+        hit.forEach(f => damage(f, dmg));
+        beams.push({ pts: path, t: 0, max: 0.2, color: theme.blue, w: 1.5 });
+        t.cd = spec.rate; sfx.zap();
         continue;
       }
       const target = firstInRange(t.x, t.y, range);
@@ -209,7 +247,7 @@ const Switchback = (() => {
   function panelButtons() {
     const y = PANEL_Y, h = PANEL_H;
     if (sel && sel.kind === 'cell') {
-      return ORDER.map((type, i) => ({ x: 12 + i * 116, y, w: 104, h, kind: 'build', type, on: coins >= TOWERS[type].cost, act: () => build(type) }));
+      return ORDER.map((type, i) => ({ x: 12 + i * 68, y, w: 62, h, kind: 'build', type, on: coins >= TOWERS[type].cost, act: () => build(type) }));
     }
     if (sel && sel.kind === 'tower') {
       const t = sel.t, max = t.level >= 3;
@@ -239,7 +277,7 @@ const Switchback = (() => {
   function release() { touch = null; }
   function keyDown(k, repeat) {
     if (k === ' ') { if (!repeat) startWave(); return true; }
-    const i = ['1', '2', '3'].indexOf(k);
+    const i = ['1', '2', '3', '4', '5'].indexOf(k);
     if (i >= 0) { if (sel && sel.kind === 'cell') build(ORDER[i]); return true; }
     if (k === 'u' || k === 'U') { upgrade(); return true; }
     return false;
@@ -252,7 +290,16 @@ const Switchback = (() => {
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
   function drawTower(type, x, y, level, angle) {
-    if (type === 'frost') {
+    if (type === 'arc') {                        // diamond with a hollow centre
+      ctx.fillStyle = theme.accent;
+      ctx.beginPath(); ctx.moveTo(x, y - 12); ctx.lineTo(x + 11, y); ctx.lineTo(x, y + 12); ctx.lineTo(x - 11, y); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+    } else if (type === 'lance') {               // long arrowhead that turns to aim
+      ctx.fillStyle = theme.accent;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
+      ctx.beginPath(); ctx.moveTo(15, 0); ctx.lineTo(-9, -8); ctx.lineTo(-5, 0); ctx.lineTo(-9, 8); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    } else if (type === 'frost') {
       ctx.fillStyle = theme.blue;
       ctx.beginPath();
       for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2 + Math.PI / 6; i ? ctx.lineTo(x + Math.cos(a) * 11, y + Math.sin(a) * 11) : ctx.moveTo(x + Math.cos(a) * 11, y + Math.sin(a) * 11); }
@@ -308,15 +355,32 @@ const Switchback = (() => {
       const spec = FOES[f.type];
       ctx.fillStyle = f.flash > 0 ? theme.muted : theme.text;
       if (spec.shape === 'triangle') { ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.a - Math.PI / 2); drawShape('triangle', 0, 0, spec.r * 2); ctx.restore(); }
+      else if (spec.shape === 'hex') {           // armoured: hexagon with a thick rim
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; i ? ctx.lineTo(f.x + Math.cos(a) * spec.r, f.y + Math.sin(a) * spec.r) : ctx.moveTo(f.x + Math.cos(a) * spec.r, f.y + Math.sin(a) * spec.r); }
+        ctx.closePath(); ctx.fill();
+        ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(f.x, f.y, 3, 0, Math.PI * 2); ctx.fill();
+      } else if (spec.shape === 'boss') {        // the Colossus: big block with a hollow centre
+        rr(f.x - spec.r, f.y - spec.r, spec.r * 2, spec.r * 2, 5); ctx.fill();
+        ctx.fillStyle = theme.bg; rr(f.x - 5, f.y - 5, 10, 10, 2); ctx.fill();
+      }
       else drawShape(spec.shape, f.x, f.y, spec.r * 2);
       if (f.slowT > 0) { ctx.strokeStyle = hexA(theme.blue, 0.85); ctx.lineWidth = 1.25; ctx.beginPath(); ctx.arc(f.x, f.y, spec.r + 4, 0, Math.PI * 2); ctx.stroke(); }
-      if (f.hp < f.max) {
-        ctx.fillStyle = theme.border; ctx.fillRect(f.x - 9, f.y - spec.r - 7, 18, 2.5);
-        ctx.fillStyle = theme.text; ctx.fillRect(f.x - 9, f.y - spec.r - 7, 18 * Math.max(0, f.hp / f.max), 2.5);
+      if (f.hp < f.max || f.type === 'colossus') {
+        const bw = f.type === 'colossus' ? 34 : 18;
+        ctx.fillStyle = theme.border; ctx.fillRect(f.x - bw / 2, f.y - spec.r - 7, bw, 2.5);
+        ctx.fillStyle = theme.text; ctx.fillRect(f.x - bw / 2, f.y - spec.r - 7, bw * Math.max(0, f.hp / f.max), 2.5);
       }
     }
     ctx.fillStyle = theme.accent;
     for (const b of bullets) { ctx.beginPath(); ctx.arc(b.x, b.y, b.kind === 'dart' ? 2 : 3.5, 0, Math.PI * 2); ctx.fill(); }
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const bm of beams) {                    // lance shots and arc lightning
+      ctx.globalAlpha = 1 - bm.t / bm.max;
+      ctx.strokeStyle = bm.color; ctx.lineWidth = bm.w;
+      ctx.beginPath(); bm.pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
     for (const g of rings) {
       const p = g.t / g.max;
       ctx.strokeStyle = g.color; ctx.lineWidth = 1.5;
@@ -342,10 +406,11 @@ const Switchback = (() => {
       if (!primary) { ctx.strokeStyle = theme.border; ctx.lineWidth = hair; ctx.stroke(); }
       const ink = primary ? '#FFFFFF' : theme.text, sub = primary ? 'rgba(255,255,255,0.8)' : theme.muted;
       ctx.textAlign = 'left';
-      if (b.kind === 'build') {
-        ctx.save(); ctx.translate(b.x + 20, b.y + b.h / 2 - 2); ctx.scale(0.8, 0.8); drawTower(b.type, 0, 0, 0, -Math.PI / 2); ctx.restore();
-        ctx.fillStyle = ink; ctx.font = `600 15px ${SANS}`; ctx.fillText(TOWERS[b.type].name, b.x + 38, b.y + 18);
-        ctx.fillStyle = sub; ctx.font = `400 12px ${FONT_MONO}`; ctx.fillText(TOWERS[b.type].cost + ' coins', b.x + 38, b.y + 36);
+      if (b.kind === 'build') {                  // five compact tiles: icon, name, cost
+        ctx.save(); ctx.translate(b.x + b.w / 2, b.y + 14); ctx.scale(0.62, 0.62); drawTower(b.type, 0, 0, 0, -Math.PI / 2); ctx.restore();
+        ctx.textAlign = 'center';
+        ctx.fillStyle = ink; ctx.font = `600 12px ${SANS}`; ctx.fillText(TOWERS[b.type].name, b.x + b.w / 2, b.y + 32);
+        ctx.fillStyle = sub; ctx.font = `400 11px ${FONT_MONO}`; ctx.fillText(String(TOWERS[b.type].cost), b.x + b.w / 2, b.y + 44);
       } else if (b.kind === 'upgrade') {
         ctx.fillStyle = ink; ctx.font = `600 15px ${SANS}`; ctx.fillText(b.max ? 'Max level' : 'Upgrade', b.x + 16, b.y + 18);
         ctx.fillStyle = sub; ctx.font = `400 12px ${FONT_MONO}`; ctx.fillText(b.max ? 'Level 3' : b.cost + ' coins', b.x + 16, b.y + 36);
@@ -364,7 +429,7 @@ const Switchback = (() => {
   return {
     id: 'switchback', name: 'Holdfast', hiKey: 'switchback.highScore',   // id/key kept so saved scores stay
     howTo: 'Tap an empty square to build a tower, tap a tower to upgrade or sell it, and start each wave when you are ready.',
-    keysHint: 'Click squares and towers; 1, 2 and 3 build, U upgrades, space starts the wave, P pauses.',
+    keysHint: 'Click squares and towers; 1 to 5 build, U upgrades, space starts the wave, P pauses.',
     overText: best => best ? 'A new best score. The road held for a long time.' : 'Too many got through this time.',
     bannerY: 300, extraLifeEvery: 0, noLives: true, touchAnywhere: true,
     reset, start, update, draw, pointerDown, pointerMove, pointerUp, release, keyDown
@@ -573,7 +638,7 @@ const CONTROLS = {
   fracture: [[['←', '→'], 'Turn'], [['↑'], 'Thrust'], [['Space'], 'Fire'], [['P'], 'Pause']],
   layline:  [[['←', '→'], 'Move'], [['↑', 'Z'], 'Turn'], [['↓'], 'Ease down'], [['Space'], 'Drop'], [['P'], 'Pause']],
   headway:  [[['←', '↑', '↓', '→'], 'Move'], [['Space'], 'Fire'], [['M'], 'Missile'], [['P'], 'Pause']],
-  switchback: [[['Click'], 'Build or select'], [['1', '2', '3'], 'Dart, Frost, Burst'], [['U'], 'Upgrade'], [['Space'], 'Start wave'], [['P'], 'Pause']]
+  switchback: [[['Click'], 'Build or select'], [['1', '5'], 'Build tower 1 to 5'], [['U'], 'Upgrade'], [['Space'], 'Start wave'], [['P'], 'Pause']]
 };
 const sidePanel = $('sidePanel');
 let sideRoom = false;                          // true when the screen has space beside the game
