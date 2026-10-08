@@ -1,8 +1,17 @@
-# Builds and publishes the site to GitHub Pages on every change to main.
+# Builds and publishes the site to GitHub Pages.
+# Game updates are uploaded in parts with the fingerprint (src/index.sha256) last,
+# so a build only starts when the fingerprint or another site file changes.
+# That gives one build per update instead of one per part.
 name: Publish site
 on:
   push:
     branches: [main]
+    paths:
+      - 'src/index.sha256'
+      - 'sw.js'
+      - 'manifest.webmanifest'
+      - 'tools/**'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 permissions:
   contents: read
