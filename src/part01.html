@@ -10,7 +10,7 @@
 <meta name="theme-color" content="#141413" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
 <title>Quiet Arcade</title>
-<meta name="description" content="Four small arcade games for your phone: Drift Defense, Fracture Field, Layline and Upstream.">
+<meta name="description" content="Five small arcade games for your phone: Drift Defense, Fracture Field, Layline, Upstream and Switchback.">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -138,6 +138,28 @@
   .hint { display: none; }
   .card p.hint { font: 400 12px/1.5 var(--sans); margin: 8px 0 0; }
   @media (hover: hover) and (pointer: fine) { .card p.hint { display: block; } }
+  .card p.hint[hidden] { display: none; }
+
+  /* ---------- Desktop side panel: keys + sound/music (hidden on phones) ---------- */
+  .side {
+    display: none; position: absolute; z-index: 2; top: 50%; transform: translateY(-50%);
+    right: calc(50% + var(--game-w, 360px) / 2 + 28px); width: 228px;
+    flex-direction: column; gap: 12px; padding: 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  }
+  @media (hover: hover) and (pointer: fine) { .side.show { display: flex; } }
+  .side h2 { font: 600 21px/1.2 var(--serif); margin: 0; }
+  .side-label { font: 500 12px/1.2 var(--sans); color: var(--muted); margin: 6px 0 0; }
+  .keys { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+  .keys li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .keys .caps { display: flex; gap: 4px; }
+  .keys .what { font: 400 14px/1.2 var(--sans); color: var(--muted); }
+  .kbd {
+    display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 7px;
+    border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 7px;
+    background: var(--bg); color: var(--text); font: 500 13px/1 var(--mono);
+  }
+  .side .settings { margin-top: 0; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   /* ---------- Score tables ---------- */
@@ -193,6 +215,11 @@
   .cname { font: 600 19px/1.2 var(--serif); }
   .cdesc { font: 400 14px/1.35 var(--sans); color: var(--muted); margin-top: 2px; }
   .cbest { font: 400 13px/1.4 var(--mono); color: var(--muted); margin-top: 4px; }
+  @media (max-height: 780px) {
+    .choice { padding: 9px 12px; }
+    .choice .cdesc { display: none; }
+    .card[data-screen="hub"] { padding-top: 22px; }
+  }
 </style>
 </head>
 <body>
@@ -207,6 +234,14 @@
 
   <main id="stage">
     <canvas id="game" aria-label="Play area"></canvas>
+
+    <aside class="side" id="sidePanel" aria-label="Controls">
+      <h2 id="sideTitle"></h2>
+      <p class="side-label">Keyboard</p>
+      <ul class="keys" id="sideKeys"></ul>
+      <p class="side-label">Audio</p>
+      <div class="settings"><button class="toggle" data-mute type="button">Sound on</button><button class="toggle" data-music type="button">Music on</button></div>
+    </aside>
 
     <div id="overlay" class="overlay">
       <!-- game picker -->
@@ -256,6 +291,18 @@
             <span class="cname">Upstream</span>
             <span class="cdesc">Push forward through incoming waves, weave past barriers, and pick up missiles and shields.</span>
             <span class="cbest" id="best-headway">Best 0</span>
+          </button>
+          <button class="choice" data-game="switchback" type="button">
+            <svg viewBox="0 0 40 40" aria-hidden="true">
+              <path d="M8 1 V12 H32 V24 H8 V39" fill="none" style="stroke: var(--muted)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
+              <circle class="ic-accent" cx="20" cy="18" r="4.5"/>
+              <rect class="ic-accent" x="16" y="28" width="8" height="8" rx="2"/>
+              <circle class="ic-text" cx="32" cy="17" r="3"/>
+              <circle class="ic-text" cx="8" cy="31" r="3"/>
+            </svg>
+            <span class="cname">Switchback</span>
+            <span class="cdesc">Build towers along a winding road and stop every wave.</span>
+            <span class="cbest" id="best-switchback">Best 0</span>
           </button>
         </div>
         <div class="settings"><button class="toggle" data-mute type="button">Sound on</button><button class="toggle" data-music type="button">Music on</button></div>
