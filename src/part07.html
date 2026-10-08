@@ -1,5 +1,5 @@
 /* =====================================================================
-   GAME 5 — SWITCHBACK (tower defence on a winding road)
+   GAME 5 — HOLDFAST (tower defence on a winding road)
    ===================================================================== */
 const Switchback = (() => {
   const COLS = 9, ROWS = 13, CELL = 40, GY = 48;          // grid: 360 × 520 from y = 48
@@ -362,7 +362,7 @@ const Switchback = (() => {
   }
 
   return {
-    id: 'switchback', name: 'Switchback', hiKey: 'switchback.highScore',
+    id: 'switchback', name: 'Holdfast', hiKey: 'switchback.highScore',   // id/key kept so saved scores stay
     howTo: 'Tap an empty square to build a tower, tap a tower to upgrade or sell it, and start each wave when you are ready.',
     keysHint: 'Click squares and towers; 1, 2 and 3 build, U upgrades, space starts the wave, P pauses.',
     overText: best => best ? 'A new best score. The road held for a long time.' : 'Too many got through this time.',
@@ -772,10 +772,14 @@ function frame(t) {
   if (!last) last = t;
   const dt = clamp((t - last) / 1000, 0, 0.05);   // clamp so a hitch can't teleport things
   last = t;
-  music.rate = shell.mode === 'play' ? 1 + Math.min(0.15, 0.025 * (run.wave - 1)) : 1;   // tempo lifts with each wave
-  if (shell.mode === 'play') { updateFx(dt); shell.game.update(dt); }
-  else if (shell.mode !== 'paused') { updateFx(dt); if (shell.game.idle) shell.game.idle(dt); }
-  render();
+  try {
+    music.rate = shell.mode === 'play' ? 1 + Math.min(0.15, 0.025 * (run.wave - 1)) : 1;   // tempo lifts with each wave
+    if (shell.mode === 'play') { updateFx(dt); shell.game.update(dt); }
+    else if (shell.mode !== 'paused') { updateFx(dt); if (shell.game.idle) shell.game.idle(dt); }
+    render();
+  } catch (err) {                              // keep the loop alive; report once
+    if (!frame.failed) { frame.failed = true; console.error(err); }
+  }
   requestAnimationFrame(frame);
 }
 
@@ -793,6 +797,7 @@ resetRunDisplay();
 showScreen('hub');
 resize();
 requestAnimationFrame(frame);
+window.__qaBooted = true;                     // the safety net stays quiet from here on
 
 /* ---------- offline support (only where sw.js is served next to this page) ---------- */
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
