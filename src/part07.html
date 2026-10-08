@@ -436,7 +436,186 @@ const Switchback = (() => {
   };
 })();
 
-const GAMES = { drift: DriftDefense, fracture: FractureField, layline: Layline, headway: Headway, switchback: Switchback };
+/* =====================================================================
+   GAME 6 — SNAKE (grow by eating, avoid walls and your own tail)
+   ===================================================================== */
+const Snake = (() => {
+  const CELL = 20, COLS = 18, ROWS = 30, BY = 24;          // board: 360 × 600 from y = 24
+  const SWIPE = 18;                                         // drag distance that counts as a turn
+  // its own tune and eating sound, added here so the shared audio code stays untouched
+  SONGS.snake = { bpm: 100, root: 55, scale: 'major', prog: [0, 3, 4, 3], bass: 'x...x...x...x...', kick: 'x.......x.......', hat: '..x...x...x...x.', density: 0.45, seed: 17 };
+  { const s = SONGS.snake, r = seeded(s.seed); s.arp = []; for (let i = 0; i < 32; i++) s.arp.push(r() < (i % 2 === 0 ? s.density : s.density * 0.15) ? Math.floor(r() * 5) : -1); }
+  sfx.eat = () => audio.tone(660, 0.08, { type: 'triangle', to: 990, gain: 0.06 });
+
+  let body, prev, dir, turns, tickT, speed, food, bonus, bonusTimer, blocks, eaten, comboT, overTimer, intro, touch, alive;
+
+  const cx = c => (c + 0.5) * CELL, cy = r => BY + (r + 0.5) * CELL;
+  const onSnake = (c, r) => body.some(s => s.c === c && s.r === r);
+  const onBlock = (c, r) => blocks.some(b => b.c === c && b.r === r);
+  function freeCell(minHeadDist) {
+    for (let i = 0; i < 600; i++) {
+      const c = Math.floor(Math.random() * COLS), r = Math.floor(Math.random() * ROWS);
+      if (onSnake(c, r) || onBlock(c, r)) continue;
+      if (food && food.c === c && food.r === r) continue;
+      if (bonus && bonus.c === c && bonus.r === r) continue;
+      if (minHeadDist && Math.abs(c - body[0].c) + Math.abs(r - body[0].r) < minHeadDist) continue;
+      return { c, r };
+    }
+    return null;
+  }
+
+  /* ----- setup ----- */
+  function reset() {               // idle scene: a resting snake and a piece of food
+    blocks = []; turns = []; touch = null; bonus = null; overTimer = 0; intro = 0; alive = true; tickT = 0; speed = 7;
+    body = [[9, 12], [9, 13], [9, 14], [10, 14], [11, 14], [11, 15], [11, 16], [10, 16], [9, 16], [8, 16]].map(([c, r]) => ({ c, r }));
+    prev = body.map(s => ({ ...s }));
+    dir = { x: 0, y: -1 };
+    food = { c: 9, r: 7 };
+  }
+  function start() {
+    blocks = []; turns = []; touch = null; bonus = null; overTimer = 0; alive = true;
+    body = [0, 1, 2, 3].map(i => ({ c: 9, r: 20 + i }));
+    prev = body.map(s => ({ ...s }));
+    dir = { x: 0, y: -1 };
+    food = null; food = freeCell(4);
+    bonusTimer = rand(12, 20);
+    speed = 7; eaten = 0; comboT = 0; tickT = 0;
+    intro = INTRO_TIME;
+    showBanner('Level 1');
+  }
+
+  /* ----- rules ----- */
+  function turn(d) {               // queue up to two turns; never straight back into yourself
+    const last = turns.length ? turns[turns.length - 1] : dir;
+    if ((d.x === last.x && d.y === last.y) || (d.x === -last.x && d.y === -last.y)) return;
+    if (turns.length < 2) turns.push(d);
+  }
+  function step() {
+    if (turns.length) dir = turns.shift();
+    const old = body, h = old[0], nc = h.c + dir.x, nr = h.r + dir.y;
+    const eats = food && food.c === nc && food.r === nr;
+    const hitsSelf = old.some((s, i) => s.c === nc && s.r === nr && !(i === old.length - 1 && !eats));
+    if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS || hitsSelf || onBlock(nc, nr)) { die(); return; }
+    body = [{ c: nc, r: nr }, ...old.slice(0, eats ? old.length : old.length - 1)];
+    prev = body.map((s, i) => i === 0 ? old[0] : (old[i] || old[i - 1]));   // where each part was, for smooth drawing
+    if (eats) eat(nc, nr);
+    if (bonus && bonus.c === nc && bonus.r === nr) {
+      registerHit(50 * run.wave, cx(nc), cy(nr), theme.blue, true, 14);
+      sfx.bonus();
+      bonus = null; bonusTimer = rand(12, 20);
+    }
+  }
+  function eat(c, r) {
+    eaten++;
+    registerHit(10 * run.wave, cx(c), cy(r), theme.text, false, 8);
+    sfx.eat();
+    comboT = 5;                                  // eat again within 5 s to keep the combo going
+    speed = Math.min(16, 7 + eaten * 0.25);
+    food = freeCell(3);
+    if (eaten % 5 === 0) {                       // every five pieces: next level
+      run.wave++;
+      showBanner('Level ' + run.wave);
+      sfx.wave();
+      if (run.wave >= 3) for (let i = 0; i < 2; i++) { const b = freeCell(6); if (b) blocks.push(b); }
+    }
+  }
+  function die() {
+    alive = false;
+    burst(cx(body[0].c), cy(body[0].r), theme.accent, 24);
+    shakeScreen();
+    sfx.playerHit();
+    resetCombo();
+    overTimer = 1.2;
+  }
+
+  /* ----- update ----- */
+  function update(dt) {
+    if (overTimer > 0) { overTimer -= dt; if (overTimer <= 0) endGame(); return; }
+    if (intro > 0) { intro -= dt; return; }
+    comboT -= dt;
+    if (comboT <= 0) resetCombo();
+    if (!bonus) {
+      bonusTimer -= dt;
+      if (bonusTimer <= 0) { const c = freeCell(3); if (c) bonus = { ...c, life: 7, max: 7 }; bonusTimer = rand(12, 20); }
+    } else {
+      bonus.life -= dt;
+      if (bonus.life <= 0) bonus = null;
+    }
+    tickT += dt;
+    const every = 1 / speed;
+    while (alive && tickT >= every) { tickT -= every; step(); }
+  }
+
+  /* ----- input: swipe to turn (keep your finger down and keep steering) ----- */
+  function pointerDown(lx, ly) { touch = { x: lx, y: ly }; }
+  function pointerMove(lx, ly) {
+    if (!touch) return;
+    const dx = lx - touch.x, dy = ly - touch.y;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE) return;
+    turn(Math.abs(dx) > Math.abs(dy) ? { x: Math.sign(dx), y: 0 } : { x: 0, y: Math.sign(dy) });
+    touch = { x: lx, y: ly };
+  }
+  function release() { touch = null; }
+  function keyDown(k) {
+    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1], a: [-1, 0], d: [1, 0], w: [0, -1], s: [0, 1] }[k];
+    if (!d) return false;
+    turn({ x: d[0], y: d[1] });
+    return true;
+  }
+
+  /* ----- draw ----- */
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  function draw() {
+    const hair = 1 / view.scale, t = shell.mode === 'play' && alive ? clamp(tickT * speed, 0, 1) : 1;
+    ctx.lineWidth = hair; ctx.strokeStyle = theme.border;
+    rr(2, BY - 2, COLS * CELL - 4, ROWS * CELL + 4, 12); ctx.stroke();
+
+    ctx.fillStyle = theme.muted;                 // blocks that appear from level 3
+    for (const b of blocks) { rr(b.c * CELL + 3, BY + b.r * CELL + 3, CELL - 6, CELL - 6, 4); ctx.fill(); }
+
+    if (food) {                                  // food, breathing gently
+      const pulse = reduceMotion ? 0 : Math.sin(performance.now() / 300) * 0.8;
+      ctx.fillStyle = theme.text;
+      ctx.beginPath(); ctx.arc(cx(food.c), cy(food.r), 5.5 + pulse, 0, Math.PI * 2); ctx.fill();
+    }
+    if (bonus) {                                 // bonus: blue diamond with a ring that runs out
+      const x = cx(bonus.c), y = cy(bonus.r);
+      ctx.fillStyle = theme.blue;
+      ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x + 7, y); ctx.lineTo(x, y + 7); ctx.lineTo(x - 7, y); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = hexA(theme.blue, 0.6); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, 11, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (bonus.life / bonus.max)); ctx.stroke();
+    }
+
+    // the snake: one smooth rounded line through its cells, with the head and tail eased between steps
+    const n = body.length, lerp = (a, b) => [cx(a.c) + (cx(b.c) - cx(a.c)) * t, cy(a.r) + (cy(b.r) - cy(a.r)) * t];
+    const ptsList = [lerp(prev[0], body[0])];
+    for (let i = 1; i < n; i++) ptsList.push([cx(body[i].c), cy(body[i].r)]);
+    ptsList.push(lerp(prev[n - 1], body[n - 1]));
+    ctx.strokeStyle = theme.accent; ctx.lineWidth = 14; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ptsList.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+    const [hx, hy] = ptsList[0];
+    ctx.fillStyle = theme.accent; ctx.beginPath(); ctx.arc(hx, hy, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(hx + dir.x * 3.5, hy + dir.y * 3.5, 2, 0, Math.PI * 2); ctx.fill();
+  }
+
+  return {
+    id: 'snake', name: 'Snake', hiKey: 'snake.highScore',
+    howTo: 'Swipe in any direction to turn; eat to grow, and stay clear of the walls and your own tail.',
+    keysHint: 'Keyboard: arrow keys or WASD to turn, P to pause.',
+    overText: best => best ? 'A new best score. That was a long snake.' : 'The snake ran into trouble this time.',
+    bannerY: 300, extraLifeEvery: 0, noLives: true, touchAnywhere: true, waveLabel: 'Level',
+    reset, start, update, draw, pointerDown, pointerMove, release, keyDown
+  };
+})();
+
+const GAMES = { drift: DriftDefense, fracture: FractureField, layline: Layline, headway: Headway, switchback: Switchback, snake: Snake };
+// Names players see. Each module above keeps its working title in code; ids and saved scores are unchanged.
+const NAMES = { drift: 'Space Defence', fracture: 'Space Rocks', layline: 'Falling Blocks', headway: "Shoot 'em Up", switchback: 'Tower Defence', snake: 'Snake' };
+for (const id in NAMES) GAMES[id].name = NAMES[id];
 
 /* =====================================================================
    INPUT — pointer on the lower half goes to the active game; keyboard
@@ -638,7 +817,8 @@ const CONTROLS = {
   fracture: [[['←', '→'], 'Turn'], [['↑'], 'Thrust'], [['Space'], 'Fire'], [['P'], 'Pause']],
   layline:  [[['←', '→'], 'Move'], [['↑', 'Z'], 'Turn'], [['↓'], 'Ease down'], [['Space'], 'Drop'], [['P'], 'Pause']],
   headway:  [[['←', '↑', '↓', '→'], 'Move'], [['Space'], 'Fire'], [['M'], 'Missile'], [['P'], 'Pause']],
-  switchback: [[['Click'], 'Build or select'], [['1', '5'], 'Build tower 1 to 5'], [['U'], 'Upgrade'], [['Space'], 'Start wave'], [['P'], 'Pause']]
+  switchback: [[['Click'], 'Build or select'], [['1', '5'], 'Build tower 1 to 5'], [['U'], 'Upgrade'], [['Space'], 'Start wave'], [['P'], 'Pause']],
+  snake:    [[['←', '↑', '↓', '→'], 'Turn'], [['W', 'A', 'S', 'D'], 'Turn'], [['P'], 'Pause']]
 };
 const sidePanel = $('sidePanel');
 let sideRoom = false;                          // true when the screen has space beside the game
