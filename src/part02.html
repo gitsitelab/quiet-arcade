@@ -53,8 +53,9 @@ const audio = {
   muted: store.get(KEY_MUTE, store.get('driftDefense.muted', '0')) === '1',
   unlock() {
     try {
-      // iPhone: play as media so the silent switch doesn't mute the game (Safari 16.4+)
-      if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback';
+      // iPhone: mix with music from other apps instead of stopping it (Safari 16.4+).
+      // Mixed audio follows the phone's silent switch, like most games.
+      if (navigator.audioSession && navigator.audioSession.type !== 'ambient') navigator.audioSession.type = 'ambient';
       if (!this.ctx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return;
@@ -271,7 +272,7 @@ const cards = overlay.querySelectorAll('.card');
 const view = { scale: 1, ox: 0, oy: 0, dpr: 1 };
 const keys = { left: false, right: false, up: false, down: false, fire: false };
 const run = { score: 0, hi: 0, hiAtStart: 0, lives: 3, wave: 1, streak: 0, mult: 1, nextLife: 0 };
-const fx = { particles: [], floaters: [], shake: 0, banner: 0, bannerText: '' };
+const fx = { particles: [], floaters: [], shake: 0, banner: 0, bannerText: '', bannerSub: '', queue: [] };
 const shell = { mode: 'hub', game: null };   // mode: hub | start | play | paused | name | over
 
 function addScore(n) {
@@ -307,13 +308,17 @@ function burst(x, y, color, n) {
   }
 }
 function addFloater(x, y, text, color) { fx.floaters.push({ x, y, text, color, life: 0.8, max: 0.8 }); }
-function showBanner(text) { fx.banner = BANNER_TIME; fx.bannerText = text; }
+function showBanner(text, sub = '') {        // banners queue up, so a boss defeat and the next chapter are both seen
+  if (fx.banner > 0.4) { fx.queue.push([text, sub]); return; }
+  fx.banner = BANNER_TIME; fx.bannerText = text; fx.bannerSub = sub;
+}
 function shakeScreen() { if (!reduceMotion) fx.shake = 0.35; }
-function clearFx() { fx.particles = []; fx.floaters = []; fx.shake = 0; fx.banner = 0; }
+function clearFx() { fx.particles = []; fx.floaters = []; fx.shake = 0; fx.banner = 0; fx.queue = []; }
 
 function updateFx(dt) {
   fx.shake = Math.max(0, fx.shake - dt);
   fx.banner = Math.max(0, fx.banner - dt);
+  if (fx.banner <= 0 && fx.queue.length) { const [t, sub] = fx.queue.shift(); fx.banner = BANNER_TIME; fx.bannerText = t; fx.bannerSub = sub; }
   for (let i = fx.particles.length - 1; i >= 0; i--) {
     const p = fx.particles[i];
     p.life -= dt;
@@ -355,6 +360,41 @@ function drawBossBar(name, frac, y) {   // thin health bar with the boss's name 
   ctx.fillStyle = theme.border; ctx.fillRect(x, y, w, 3);
   ctx.fillStyle = theme.text; ctx.fillRect(x, y, w * clamp(frac, 0, 1), 3);
 }
+/* ---------- story: chapters and the bosses that guard them ----------
+   Games with bosses list their chapters (a place and its boss). After the last
+   chapter the cycle repeats as a harder "II", "III" tier. Difficulty follows a
+   sawtooth: each chapter opens a little easier than the boss that ended the last. */
+const ROMAN = ['', ' II', ' III', ' IV', ' V', ' VI', ' VII', ' VIII'];
+const chapterOf = (g, wave) => Math.floor((wave - 1) / g.chapterLength);
+function chapterInfo(g, idx) {
+  const c = g.chapters[idx % g.chapters.length], tier = Math.floor(idx / g.chapters.length), suffix = tier < ROMAN.length ? ROMAN[tier] : ' +';
+  return { place: c.place + suffix, boss: c.boss + suffix, kind: c.kind, tier };
+}
+const easedWave = (g, wave) => wave - (wave > 1 && (wave - 1) % g.chapterLength === 0 ? 1.5 : 0);   // the breather
+function waveBanner(g) {                        // a chapter's first wave announces the place
+  const idx = chapterOf(g, run.wave), info = chapterInfo(g, idx);
+  if ((run.wave - 1) % g.chapterLength === 0) showBanner(info.place, 'Chapter ' + (idx + 1));
+  else showBanner('Wave ' + run.wave, info.place);
+}
+const journey = {                               // bosses beaten on this device, and the furthest chapter unlocked
+  key: g => 'quietArcade.journey.' + g.id,
+  get(g) {
+    try { const v = JSON.parse(store.get(this.key(g), '{}')); return { beaten: Array.isArray(v.beaten) ? v.beaten : [], unlocked: v.unlocked | 0 }; }
+    catch (e) { return { beaten: [], unlocked: 0 }; }
+  },
+  beat(g, name, nextChapter) {
+    const j = this.get(g), first = !j.beaten.includes(name);
+    if (first) j.beaten.push(name);
+    j.unlocked = Math.max(j.unlocked, nextChapter);
+    store.set(this.key(g), JSON.stringify(j));
+    return first;
+  }
+};
+function bossDefeated(name) {                   // shared fanfare, and the progress is saved
+  const g = shell.game, first = journey.beat(g, name, chapterOf(g, run.wave) + 1);
+  sfx.bossDown();
+  showBanner(name, first ? 'Defeated for the first time' : 'Defeated');
+}
 function drawFx() {
   for (const p of fx.particles) {
     ctx.globalAlpha = Math.max(0, p.life / p.max);
@@ -374,6 +414,10 @@ function drawFx() {
     ctx.fillStyle = theme.text;
     ctx.font = `600 34px ${FONT_SERIF}`;
     ctx.fillText(fx.bannerText, LW / 2, shell.game.bannerY);
+    if (fx.bannerSub) {
+      ctx.fillStyle = theme.muted; ctx.font = '500 13px -apple-system, system-ui, sans-serif';
+      ctx.fillText(fx.bannerSub, LW / 2, shell.game.bannerY + 30);
+    }
   }
   ctx.globalAlpha = 1;
 }
