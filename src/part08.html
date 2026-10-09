@@ -1,105 +1,224 @@
 /* =====================================================================
    GAME 7 — PONG (you at the bottom, the computer at the top)
+   Targets appear mid-field: hit them with a ball (or your laser) and they drop
+   power-ups to catch with your paddle. Now and then an extra ball joins in.
    ===================================================================== */
 const Pong = (() => {
-  const TOP = 40, BOTTOM = 620, PAD_W = 70, PAD_H = 10, YOU_Y = 590, CPU_Y = 70, BALL_R = 6, WIN = 5, DRAG_GAIN = 1.3;
+  const TOP = 40, BOTTOM = 620, PAD_H = 10, YOU_Y = 590, CPU_Y = 70, BALL_R = 6, WIN = 5, DRAG_GAIN = 1.3;
+  const BASE_W = 70, MAX_BALLS = 4, MAX_LIVES = 5, BAND = [200, 440];
+  const DROPS = [['heart', 0.15], ['wide', 0.25], ['multi', 0.25], ['laser', 0.2], ['slow', 0.15]];
+  const LABEL = { wide: 'Wide paddle', multi: 'Extra balls', laser: 'Laser', slow: 'Slow balls', heart: '+1 life' };
   SONGS.pong = { bpm: 108, root: 52, scale: 'dorian', prog: [0, 3, 0, 4], bass: 'x...x...x...x...', kick: 'x.......x.......', hat: '....x.......x...', density: 0.4, seed: 19 };
   { const s = SONGS.pong, r = seeded(s.seed); s.arp = []; for (let i = 0; i < 32; i++) s.arp.push(r() < (i % 2 === 0 ? s.density : s.density * 0.15) ? Math.floor(r() * 5) : -1); }
   sfx.paddle = () => audio.tone(440, 0.06, { type: 'triangle', gain: 0.07 });
   sfx.wall = () => audio.tone(300, 0.04, { type: 'triangle', gain: 0.04 });
 
-  let you, cpu, ball, serveT, serveDown, points, overTimer, drag;
+  let you, cpu, balls, serveT, serveDown, points, overTimer, drag, targets, drops, bolts, fx2, targetT, extraT, boltT;
+  const L = () => run.wave;
 
-  function newBall(down) {
-    const a = rand(-0.5, 0.5), sp = 240 + 18 * (run.wave - 1);
-    return { x: LW / 2, y: (TOP + BOTTOM) / 2, vx: Math.sin(a) * sp, vy: (down ? 1 : -1) * Math.cos(a) * sp, sp };
+  function newBall(down, x = LW / 2, y = (TOP + BOTTOM) / 2, a = rand(-0.5, 0.5)) {
+    const sp = 250 + 20 * (L() - 1);
+    return { x, y, vx: Math.sin(a) * sp, vy: (down ? 1 : -1) * Math.cos(a) * sp, sp };
+  }
+  function clearField() {
+    targets = []; drops = []; bolts = []; fx2 = { wide: 0, laser: 0, slow: 0 };
+    targetT = 3; extraT = rand(18, 26); boltT = 0;
   }
   function reset() {               // idle scene: the two paddles rallying on their own
-    you = { x: LW / 2 }; cpu = { x: LW / 2, err: 0 };
-    points = { you: 0, cpu: 0 }; ball = newBall(true); serveT = 0; serveDown = true; overTimer = 0; drag = null;
+    you = { x: LW / 2, w: BASE_W }; cpu = { x: LW / 2, err: 0, aim: 0, stun: 0 };
+    points = { you: 0, cpu: 0 }; balls = [newBall(true)]; serveT = 0; serveDown = true; overTimer = 0; drag = null;
+    clearField();
   }
-  function start() { reset(); ball = null; serveT = 1.2; showBanner('Level ' + run.wave); }
+  function start() { reset(); balls = []; serveT = 1.2; showBanner('Level ' + L()); }
 
-  function predictX() {            // where the ball will cross the computer's line, bouncing off the side walls
-    const t = (ball.y - CPU_Y) / -ball.vy, span = LW - 2 * BALL_R;
-    let x = ball.x - BALL_R + ball.vx * t;
+  /* ----- the computer: reads the ball early, aims its returns away from you, and only sometimes misjudges ----- */
+  function predictX(b) {
+    const t = (b.y - CPU_Y) / -b.vy, span = LW - 2 * BALL_R;
+    let x = b.x - BALL_R + b.vx * t;
     x = ((x % (2 * span)) + 2 * span) % (2 * span);
     return BALL_R + (x > span ? 2 * span - x : x);
   }
   function moveCpu(dt) {
-    const speed = Math.min(420, 150 + 25 * (run.wave - 1));
-    const mid = (TOP + BOTTOM) / 2;                // it only reacts once the ball crosses into its half
-    const target = ball && ball.vy < 0 && ball.y < mid + 40 ? predictX() + cpu.err : LW / 2;
+    if (cpu.stun > 0) { cpu.stun -= dt; return; }       // a laser hit freezes it for a moment
+    const speed = Math.min(540, 280 + 30 * (L() - 1));
+    const reactY = Math.min(BOTTOM - 40, (TOP + BOTTOM) / 2 + 150 + 40 * (L() - 1));
+    let first = null, ft = Infinity;
+    for (const b of balls) if (b.vy < 0 && b.y < reactY) { const t = (b.y - CPU_Y) / -b.vy; if (t < ft) { ft = t; first = b; } }
+    const target = first ? predictX(first) + cpu.err - cpu.aim : LW / 2;
     cpu.x += clamp(target - cpu.x, -speed * dt, speed * dt);
-    cpu.x = clamp(cpu.x, PAD_W / 2, LW - PAD_W / 2);
+    cpu.x = clamp(cpu.x, BASE_W / 2, LW - BASE_W / 2);
   }
-  function bounce(p, down) {       // where it hits the paddle sets the angle; every return is a little faster
-    const off = clamp((ball.x - p.x) / (PAD_W / 2), -1, 1), a = off * 1.0;
-    ball.sp = Math.min(620, ball.sp * 1.04 + 4);
-    ball.vx = Math.sin(a) * ball.sp; ball.vy = (down ? 1 : -1) * Math.cos(a) * ball.sp;
-    ball.y = down ? CPU_Y + PAD_H / 2 + BALL_R : YOU_Y - PAD_H / 2 - BALL_R;
-    if (!down) cpu.err = rand(-1, 1) * Math.max(14, 58 - 5 * (run.wave - 1));   // the computer misjudges, a little less each level
+  function planCpu() {             // decided each time you return the ball
+    const lv = L(), missChance = Math.max(0.03, 0.1 - 0.012 * (lv - 1));
+    cpu.err = Math.random() < missChance ? (Math.random() < 0.5 ? -1 : 1) * rand(46, 70) : rand(-1, 1) * Math.max(4, 16 - 2 * (lv - 1));
+    const skill = Math.min(0.5, 0.3 + 0.05 * (lv - 1));
+    cpu.aim = (you.x < LW / 2 ? 1 : -1) * BASE_W / 2 * skill;   // send it to the side you're not on
+  }
+  function bounce(b, p, w, down) {   // where it meets the paddle sets the angle; every return is a little faster
+    const off = clamp((b.x - p.x) / (w / 2), -1, 1), a = off * 1.0;
+    b.sp = Math.min(640, b.sp * 1.04 + 4);
+    b.vx = Math.sin(a) * b.sp; b.vy = (down ? 1 : -1) * Math.cos(a) * b.sp;
+    b.y = down ? CPU_Y + PAD_H / 2 + BALL_R : YOU_Y - PAD_H / 2 - BALL_R;
     sfx.paddle();
   }
-  function physics(dt, auto) {
-    const n = Math.max(1, Math.ceil(ball.sp * dt / 8)), h = dt / n;
-    for (let i = 0; i < n && ball; i++) {
-      ball.x += ball.vx * h; ball.y += ball.vy * h;
-      if (ball.x < BALL_R) { ball.x = BALL_R; ball.vx = Math.abs(ball.vx); sfx.wall(); }
-      if (ball.x > LW - BALL_R) { ball.x = LW - BALL_R; ball.vx = -Math.abs(ball.vx); sfx.wall(); }
-      if (ball.vy > 0 && ball.y + BALL_R >= YOU_Y - PAD_H / 2 && ball.y - BALL_R <= YOU_Y + PAD_H / 2 && Math.abs(ball.x - you.x) <= PAD_W / 2 + BALL_R) {
-        bounce(you, false);
-        if (!auto) registerHit(10, ball.x, YOU_Y - 14, theme.accent, false, 6);
-      }
-      if (ball.vy < 0 && ball.y - BALL_R <= CPU_Y + PAD_H / 2 && ball.y + BALL_R >= CPU_Y - PAD_H / 2 && Math.abs(ball.x - cpu.x) <= PAD_W / 2 + BALL_R) bounce(cpu, true);
-      if (ball.y < TOP - 20) { if (auto) ball = newBall(true); else pointYou(); }
-      else if (ball && ball.y > BOTTOM + 20) { if (auto) ball = newBall(false); else pointCpu(); }
+  function hitTarget(t, i, x, y) {
+    t.hp--; t.flash = 0.1;
+    if (t.hp > 0) { sfx.tick(); return; }
+    targets.splice(i, 1);
+    registerHit(50 * L(), x, y, theme.text, false, 10);
+    sfx.hit(run.mult);
+    if (Math.random() < 0.6) {                 // most targets drop something to catch
+      let r = Math.random() * DROPS.reduce((s, d) => s + d[1], 0), kind = 'wide';
+      for (const [k, w] of DROPS) { if ((r -= w) <= 0) { kind = k; break; } }
+      if (kind === 'heart' && run.lives >= MAX_LIVES) kind = 'multi';
+      drops.push({ kind, x: t.x, y: t.y, vy: 120 });
     }
   }
-  function pointYou() {
-    const pts = 100 * run.wave;
+  function physics(dt, auto) {
+    const slow = fx2.slow > 0 ? 0.7 : 1;
+    for (let k = balls.length - 1; k >= 0; k--) {
+      const b = balls[k];
+      if (!b) continue;                          // a point just cleared the field
+      const n = Math.max(1, Math.ceil(b.sp * dt / 8)), h = dt * slow / n;
+      let gone = false;
+      for (let i = 0; i < n && !gone; i++) {
+        b.x += b.vx * h; b.y += b.vy * h;
+        if (b.x < BALL_R) { b.x = BALL_R; b.vx = Math.abs(b.vx); sfx.wall(); }
+        if (b.x > LW - BALL_R) { b.x = LW - BALL_R; b.vx = -Math.abs(b.vx); sfx.wall(); }
+        for (let j = targets.length - 1; j >= 0; j--) {     // targets: the ball bounces off and chips them
+          const t = targets[j];
+          if (Math.abs(b.x - t.x) > t.w / 2 + BALL_R || Math.abs(b.y - t.y) > t.h / 2 + BALL_R) continue;
+          if (Math.abs(b.x - t.x) / (t.w / 2) > Math.abs(b.y - t.y) / (t.h / 2)) b.vx = Math.sign(b.x - t.x) * Math.abs(b.vx);
+          else b.vy = Math.sign(b.y - t.y) * Math.abs(b.vy);
+          if (!auto) hitTarget(t, j, b.x, b.y);
+          break;
+        }
+        if (b.vy > 0 && b.y + BALL_R >= YOU_Y - PAD_H / 2 && b.y - BALL_R <= YOU_Y + PAD_H / 2 && Math.abs(b.x - you.x) <= you.w / 2 + BALL_R) {
+          bounce(b, you, you.w, false);
+          if (!auto) { registerHit(10, b.x, YOU_Y - 14, theme.accent, false, 6); planCpu(); }
+        }
+        if (b.vy < 0 && b.y - BALL_R <= CPU_Y + PAD_H / 2 && b.y + BALL_R >= CPU_Y - PAD_H / 2 && Math.abs(b.x - cpu.x) <= BASE_W / 2 + BALL_R) bounce(b, cpu, BASE_W, true);
+        if (b.y < TOP - 20) { gone = true; balls.splice(k, 1); if (auto) balls.push(newBall(true)); else pointYou(b.x); }
+        else if (b.y > BOTTOM + 20) { gone = true; balls.splice(k, 1); if (auto) balls.push(newBall(false)); else pointCpu(); }
+      }
+    }
+  }
+  function pointYou(x) {
+    const pts = 100 * L();
     addScore(pts); updateHud();
-    addFloater(LW / 2, CPU_Y + 30, '+' + pts, theme.accent);
-    points.you++; ball = null; serveT = 1; serveDown = false;
-    sfx.bonus();
-    if (points.you >= WIN) {       // five points: next level, and the computer gets quicker
-      run.wave++; points = { you: 0, cpu: 0 }; serveT = 2;
-      showBanner('Level ' + run.wave, 'The computer gets quicker');
+    addFloater(clamp(x, 40, LW - 40), CPU_Y + 30, '+' + pts, theme.accent);
+    points.you++; sfx.bonus();
+    if (!balls.length) { serveT = 1; serveDown = false; }
+    if (points.you >= WIN) {       // five points: next level, a sharper computer
+      run.wave++; points = { you: 0, cpu: 0 }; balls = []; serveT = 2; clearField();
+      showBanner('Level ' + L(), 'The computer gets sharper');
       sfx.wave();
     }
   }
   function pointCpu() {
     run.lives = Math.max(0, run.lives - 1);
-    points.cpu++; ball = null; serveT = 1.2; serveDown = true;
+    points.cpu++;
     resetCombo(); shakeScreen(); sfx.playerHit(); updateHud();
-    if (run.lives <= 0) overTimer = 1.2;
+    if (run.lives <= 0) { overTimer = 1.2; balls = []; return; }
+    if (!balls.length) { serveT = 1.2; serveDown = true; }
+  }
+  function catchDrop(d) {
+    if (d.kind === 'heart') run.lives = Math.min(MAX_LIVES, run.lives + 1);
+    else if (d.kind === 'multi') {
+      for (const b of balls.slice()) if (balls.length < MAX_BALLS) {
+        const a = Math.atan2(b.vx, Math.abs(b.vy)) + (Math.random() < 0.5 ? -0.45 : 0.45);   // same way, a different angle
+        balls.push(newBall(b.vy > 0, b.x, b.y, a));
+      }
+      if (!balls.length) balls.push(newBall(false, you.x, YOU_Y - 40));
+    } else fx2[d.kind] = d.kind === 'laser' ? 8 : 12;
+    addScore(25); updateHud();
+    addFloater(d.x, YOU_Y - 30, LABEL[d.kind], d.kind === 'heart' || d.kind === 'laser' ? theme.accent : theme.blue);
+    sfx.pickup();
   }
 
   function idle(dt) {
     if (reduceMotion) return;
-    you.x += clamp(ball.x - you.x, -200 * dt, 200 * dt);
+    const b = balls[0];
+    if (b) you.x += clamp(b.x - you.x, -200 * dt, 200 * dt);
     moveCpu(dt);
     physics(dt, true);
   }
   function update(dt) {
     if (overTimer > 0) { overTimer -= dt; if (overTimer <= 0) endGame(); return; }
     const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
-    if (dir) you.x = clamp(you.x + dir * 380 * dt, PAD_W / 2, LW - PAD_W / 2);
+    for (const k in fx2) fx2[k] = Math.max(0, fx2[k] - dt);
+    you.w = fx2.wide > 0 ? BASE_W * 1.5 : BASE_W;
+    if (dir) you.x += dir * 380 * dt;
+    you.x = clamp(you.x, you.w / 2, LW - you.w / 2);
     moveCpu(dt);
-    if (!ball) { serveT -= dt; if (serveT <= 0) ball = newBall(serveDown); return; }
-    physics(dt, false);
+    if (!balls.length) { serveT -= dt; if (serveT <= 0) { balls.push(newBall(serveDown)); planCpu(); } }
+    else physics(dt, false);
+    // now and then, an extra ball joins the rally
+    if (balls.length && balls.length < MAX_BALLS && (extraT -= dt) <= 0) {
+      balls.push(newBall(Math.random() < 0.5));
+      extraT = Math.max(12, rand(20, 28) - 1.5 * (L() - 1));
+      addFloater(LW / 2, (TOP + BOTTOM) / 2 - 24, 'Extra ball', theme.muted);
+      sfx.seeker();
+    }
+    // targets drift into the middle of the field
+    if ((targetT -= dt) <= 0 && targets.length < 4) {
+      targets.push({ x: rand(45, LW - 45), y: rand(BAND[0], BAND[1]), w: 34, h: 12, hp: L() >= 3 && Math.random() < 0.35 ? 2 : 1, vx: L() >= 2 ? rand(-30, 30) : 0, flash: 0 });
+      targetT = rand(5, 9);
+    }
+    for (const t of targets) {
+      t.flash = Math.max(0, t.flash - dt);
+      t.x += t.vx * dt;
+      if (t.x < t.w / 2 + 4 || t.x > LW - t.w / 2 - 4) t.vx = -t.vx;
+    }
+    // power-ups fall towards you: catch them with the paddle
+    for (let i = drops.length - 1; i >= 0; i--) {
+      const d = drops[i];
+      d.y += d.vy * dt;
+      if (d.y >= YOU_Y - 14 && d.y <= YOU_Y + 8 && Math.abs(d.x - you.x) <= you.w / 2 + 10) { drops.splice(i, 1); catchDrop(d); }
+      else if (d.y > BOTTOM) drops.splice(i, 1);
+    }
+    // laser: your paddle fires from both ends; bolts break targets and freeze the computer
+    if (fx2.laser > 0 && (boltT -= dt) <= 0) {
+      bolts.push({ x: you.x - you.w / 2 + 6, y: YOU_Y - 8 }, { x: you.x + you.w / 2 - 6, y: YOU_Y - 8 });
+      boltT = 0.35; sfx.shoot();
+    }
+    for (let i = bolts.length - 1; i >= 0; i--) {
+      const s = bolts[i];
+      s.y -= 520 * dt;
+      let hit = false;
+      for (let j = targets.length - 1; j >= 0 && !hit; j--) {
+        const t = targets[j];
+        if (Math.abs(s.x - t.x) <= t.w / 2 && Math.abs(s.y - t.y) <= t.h / 2 + 6) { hitTarget(t, j, s.x, s.y); hit = true; }
+      }
+      if (!hit && Math.abs(s.x - cpu.x) <= BASE_W / 2 && Math.abs(s.y - CPU_Y) <= PAD_H) {
+        hit = true; cpu.stun = 1.2;
+        addFloater(cpu.x, CPU_Y + 26, 'Frozen', theme.blue); sfx.zap();
+      }
+      if (hit || s.y < TOP) bolts.splice(i, 1);
+    }
   }
 
   /* ----- input: drag anywhere to slide your paddle ----- */
   function pointerDown(lx) { drag = { sx: lx, px: you.x }; }
-  function pointerMove(lx) { if (drag) you.x = clamp(drag.px + (lx - drag.sx) * DRAG_GAIN, PAD_W / 2, LW - PAD_W / 2); }
+  function pointerMove(lx) { if (drag) you.x = clamp(drag.px + (lx - drag.sx) * DRAG_GAIN, you.w / 2, LW - you.w / 2); }
   function release() { drag = null; }
 
   /* ----- draw ----- */
-  function paddle(x, y, color) {
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x - PAD_W / 2, y - PAD_H / 2, PAD_W, PAD_H, 5) : ctx.rect(x - PAD_W / 2, y - PAD_H / 2, PAD_W, PAD_H);
-    ctx.fill();
+  function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+  function heart(x, y, s) {
+    ctx.beginPath(); ctx.moveTo(x, y + s * 0.9);
+    ctx.bezierCurveTo(x - s * 1.3, y, x - s * 0.7, y - s, x, y - s * 0.35);
+    ctx.bezierCurveTo(x + s * 0.7, y - s, x + s * 1.3, y, x, y + s * 0.9); ctx.fill();
+  }
+  function dropIcon(d) {
+    const { x, y } = d;
+    ctx.strokeStyle = theme.border; ctx.lineWidth = 1.25; ctx.fillStyle = theme.surface;
+    ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (d.kind === 'heart') { ctx.fillStyle = theme.accent; heart(x, y, 6); }
+    else if (d.kind === 'wide') { ctx.fillStyle = theme.blue; rrect(x - 7, y - 2, 14, 4, 2); ctx.fill(); }
+    else if (d.kind === 'multi') { ctx.fillStyle = theme.text; for (const dx of [-3.5, 3.5]) { ctx.beginPath(); ctx.arc(x + dx, y, 2.6, 0, Math.PI * 2); ctx.fill(); } }
+    else if (d.kind === 'laser') { ctx.fillStyle = theme.accent; ctx.beginPath(); ctx.moveTo(x, y - 6); ctx.lineTo(x + 5, y + 4); ctx.lineTo(x - 5, y + 4); ctx.closePath(); ctx.fill(); }
+    else { ctx.strokeStyle = theme.blue; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke(); }
   }
   function draw() {
     const mid = (TOP + BOTTOM) / 2;
@@ -109,14 +228,36 @@ const Pong = (() => {
     ctx.font = `600 56px ${FONT_SERIF}`;                                 // the set score, large and faint
     ctx.fillText(String(points.cpu), LW / 2, mid - 70);
     ctx.fillText(String(points.you), LW / 2, mid + 70);
-    paddle(cpu.x, CPU_Y, theme.text);
-    paddle(you.x, YOU_Y, theme.accent);
-    if (ball) { ctx.fillStyle = theme.text; ctx.beginPath(); ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI * 2); ctx.fill(); }
+    for (const t of targets) {                   // targets: two-hit ones carry a hollow centre
+      ctx.fillStyle = t.flash > 0 ? theme.muted : theme.text;
+      rrect(t.x - t.w / 2, t.y - t.h / 2, t.w, t.h, 4); ctx.fill();
+      if (t.hp > 1) { ctx.fillStyle = theme.bg; rrect(t.x - 8, t.y - 2, 16, 4, 2); ctx.fill(); }
+    }
+    for (const d of drops) dropIcon(d);
+    ctx.fillStyle = theme.accent;
+    for (const s of bolts) ctx.fillRect(s.x - 1.25, s.y - 8, 2.5, 10);
+    ctx.fillStyle = cpu.stun > 0 ? theme.blue : theme.text;
+    rrect(cpu.x - BASE_W / 2, CPU_Y - PAD_H / 2, BASE_W, PAD_H, 5); ctx.fill();
+    ctx.fillStyle = theme.accent;
+    rrect(you.x - you.w / 2, YOU_Y - PAD_H / 2, you.w, PAD_H, 5); ctx.fill();
+    if (fx2.laser > 0) { ctx.fillRect(you.x - you.w / 2 + 4, YOU_Y - 10, 4, 6); ctx.fillRect(you.x + you.w / 2 - 8, YOU_Y - 10, 4, 6); }
+    ctx.fillStyle = theme.text;
+    for (const b of balls) { ctx.beginPath(); ctx.arc(b.x, b.y, BALL_R, 0, Math.PI * 2); ctx.fill(); }
+    // active power-ups, bottom left, with time left
+    let px = 12;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = '500 11px -apple-system, system-ui, sans-serif';
+    for (const k of ['wide', 'laser', 'slow']) {
+      if (fx2[k] <= 0) continue;
+      ctx.fillStyle = theme.muted; ctx.fillText(LABEL[k], px, BOTTOM + 8);
+      ctx.fillStyle = theme.border; ctx.fillRect(px, BOTTOM + 12, 64, 2);
+      ctx.fillStyle = k === 'laser' ? theme.accent : theme.blue; ctx.fillRect(px, BOTTOM + 12, 64 * fx2[k] / (k === 'laser' ? 8 : 12), 2);
+      px += 80;
+    }
   }
 
   return {
-    id: 'pong', name: 'Pong', hiKey: 'pong.highScore',
-    howTo: 'Drag anywhere to slide your paddle at the bottom. Win five points to reach the next level; each ball that gets past you costs a life.',
+    id: 'pong', name: 'Pong', hiKey: 'pong.highScore', lifeIcon: 'heart',
+    howTo: 'Drag anywhere to slide your paddle. Hit the targets in the middle to knock loose power-ups, and catch them with your paddle. Win five points to reach the next level; each ball that gets past you costs a heart.',
     keysHint: 'Keyboard: left and right arrows to move, P to pause.',
     overText: best => best ? 'A new best score. The computer met its match.' : 'The computer took the last point this time.',
     bannerY: 300, extraLifeEvery: 0, touchAnywhere: true, waveLabel: 'Level',
