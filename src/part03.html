@@ -439,6 +439,8 @@ const FractureField = (() => {
   const SEEKER_PTS = 200;
 
   let ship, shots, rocks, seeker, sShots, seekerTimer, intro, overTimer, fireCd, stick;
+  let missiles, blasts, pickups, missilesHeld, shieldCharges, pickupT, shieldT, lastTap;
+  const MAX_MISSILES = 3, MAX_SHIELDS = 2, BLAST_R = 60;
 
   const wrapD = (d, span) => d - span * Math.round(d / span);
   const dist2 = (a, b) => { const dx = wrapD(a.x - b.x, LW), dy = wrapD(a.y - b.y, LH); return dx * dx + dy * dy; };
@@ -473,6 +475,8 @@ const FractureField = (() => {
   function clearRun() {
     shots = []; sShots = []; seeker = null; seekerTimer = rand(18, 28);
     overTimer = 0; fireCd = 0; stick = null; intro = 0;
+    missiles = []; blasts = []; pickups = []; missilesHeld = 1; shieldCharges = 0;
+    pickupT = rand(10, 16); shieldT = rand(18, 26); lastTap = null;
   }
   function reset() {            // idle scene behind the menus
     clearRun();
@@ -492,7 +496,16 @@ const FractureField = (() => {
   }
 
   /* ----- input: floating joystick ----- */
-  function pointerDown(lx, ly) { stick = { ox: lx, oy: ly, dx: 0, dy: 0, len: 0 }; }
+  function pointerDown(lx, ly) {
+    const now = performance.now();               // a quick second tap launches a missile
+    if (lastTap && now - lastTap.t < 300 && Math.hypot(lx - lastTap.x, ly - lastTap.y) < 50) { launchMissile(); lastTap = null; }
+    else lastTap = { t: now, x: lx, y: ly };
+    stick = { ox: lx, oy: ly, dx: 0, dy: 0, len: 0 };
+  }
+  function keyDown(k, repeat) {
+    if (k === 'm' || k === 'M' || k === 'x' || k === 'X') { if (!repeat) launchMissile(); return true; }
+    return false;
+  }
   function pointerMove(lx, ly) {
     if (!stick) return;
     let dx = lx - stick.ox, dy = ly - stick.oy, len = Math.hypot(dx, dy);
@@ -514,9 +527,11 @@ const FractureField = (() => {
     fireCd -= dt;
     updateShip(dt);
     updateShots(dt);
+    updateMissiles(dt);
+    for (let i = blasts.length - 1; i >= 0; i--) { blasts[i].t += dt; if (blasts[i].t >= blasts[i].max) blasts.splice(i, 1); }
     if (overTimer > 0) { overTimer -= dt; moveRocks(dt); if (overTimer <= 0) endGame(); return; }
     if (intro > 0) intro -= dt;
-    else { moveRocks(dt); updateSeeker(dt); }
+    else { moveRocks(dt); updateSeeker(dt); updatePickups(dt); }
     collide();
     if (!rocks.length && intro <= 0 && overTimer <= 0) {
       seeker = null; sShots = [];
