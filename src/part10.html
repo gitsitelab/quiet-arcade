@@ -90,11 +90,14 @@ window.addEventListener('blur', () => pause());
    SCREENS + HUD
    ===================================================================== */
 const hud = {};
+const HEART_SVG = '<svg viewBox="0 0 24 22" aria-hidden="true"><path class="ic-accent" d="M12 21 C4 15 0 11 0 6.5 C0 3 2.7 0.5 6 0.5 C8.6 0.5 10.6 2 12 4 C13.4 2 15.4 0.5 18 0.5 C21.3 0.5 24 3 24 6.5 C24 11 20 15 12 21 Z"/></svg>';
 function updateHud() {
   if (hud.score !== run.score) { elScore.textContent = fmt(run.score); hud.score = run.score; }
   if (hud.mult !== run.mult) { elCombo.textContent = '×' + run.mult; elCombo.classList.toggle('on', run.mult > 1); hud.mult = run.mult; }
-  if (hud.lives !== run.lives) {
-    elLives.innerHTML = SHIP_SVG.repeat(run.lives);
+  const icon = shell.game && shell.game.lifeIcon === 'heart' ? HEART_SVG : SHIP_SVG;
+  if (hud.lives !== run.lives || hud.icon !== icon) {
+    hud.icon = icon;
+    elLives.innerHTML = icon.repeat(run.lives);
     elLives.setAttribute('aria-label', run.lives + (run.lives === 1 ? ' life left' : ' lives left'));
     hud.lives = run.lives;
   }
@@ -257,6 +260,22 @@ function renderJourney(g) {
     b.addEventListener('click', () => { startChapter = i; renderJourney(g); sfx.click(); });
     seg.appendChild(b);
   }
+  // start over: clears bosses beaten and unlocked chapters for this game (high scores stay); asks for a second tap
+  const reset = $('journeyReset');
+  reset.hidden = !(j.beaten.length || j.unlocked);
+  reset.classList.remove('armed'); reset.textContent = 'Reset progress';
+  reset.onclick = () => {
+    if (!reset.classList.contains('armed')) {
+      reset.classList.add('armed'); reset.textContent = 'Tap again to reset bosses and chapters';
+      clearTimeout(reset.timer);
+      reset.timer = setTimeout(() => { reset.classList.remove('armed'); reset.textContent = 'Reset progress'; }, 3000);
+      return;
+    }
+    clearTimeout(reset.timer);
+    store.set(journey.key(g), '{}');
+    startChapter = 0; sfx.click();
+    renderJourney(g);
+  };
 }
 
 function bestFor(g) {
