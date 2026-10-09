@@ -26,6 +26,82 @@
     }
   }
 
+  // ----- missiles: home in on the nearest rock and burst, breaking everything close by -----
+  function launchMissile() {
+    if (!ship.alive || overTimer > 0) return;
+    if (missilesHeld <= 0) { sfx.empty(); return; }
+    missilesHeld--;
+    const hx = Math.sin(ship.a), hy = -Math.cos(ship.a);
+    missiles.push({ x: ship.x + hx * 12, y: ship.y + hy * 12, a: Math.atan2(hy, hx), sp: 160, t: 0 });
+    sfx.missile();
+  }
+  function updateMissiles(dt) {
+    for (let i = missiles.length - 1; i >= 0; i--) {
+      const m = missiles[i];
+      m.t += dt;
+      let target = null, bd = Infinity;
+      for (const r of rocks) { const d = dist2(m, r); if (d < bd) { bd = d; target = r; } }
+      if (target) {
+        let diff = Math.atan2(wrapD(target.y - m.y, LH), wrapD(target.x - m.x, LW)) - m.a;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        m.a += clamp(diff, -5 * dt, 5 * dt);
+      }
+      m.sp = Math.min(400, m.sp + 520 * dt);
+      m.x += Math.cos(m.a) * m.sp * dt; m.y += Math.sin(m.a) * m.sp * dt; wrap(m);
+      if (!reduceMotion) fx.particles.push({ x: m.x, y: m.y, vx: 0, vy: 0, life: 0.25, max: 0.25, size: 2, color: theme.accent });
+      const hit = rocks.some(r => dist2(m, r) < (r.r + 4) ** 2) || (seeker && dist2(m, seeker) < 16 * 16);
+      if (hit || m.t > 2.4) { explode(m.x, m.y); missiles.splice(i, 1); }
+    }
+  }
+  function explode(x, y) {
+    const at = { x, y };
+    blasts.push({ x, y, t: 0, max: 0.35, r: BLAST_R, color: theme.accent });
+    sfx.boom(); burst(x, y, theme.accent, 16);
+    const caught = rocks.filter(r => dist2(at, r) < (BLAST_R + r.r) ** 2);
+    for (const r of caught) {
+      const j = rocks.indexOf(r);
+      if (j < 0) continue;
+      registerHit(ROCK_PTS[r.size], r.x, r.y, theme.text, false, 4 + r.size * 4);
+      splitRock(j);
+    }
+    if (seeker && dist2(at, seeker) < (BLAST_R + 14) ** 2) {
+      registerHit(SEEKER_PTS, seeker.x, seeker.y, theme.accent, true, 18);
+      seeker = null; seekerTimer = rand(16, 26);
+    }
+    sShots = sShots.filter(s => dist2(at, s) > BLAST_R * BLAST_R);
+  }
+  // ----- pickups drift through space: orange ring = missile, blue orb = shield -----
+  function updatePickups(dt) {
+    if ((pickupT -= dt) <= 0) { spawnPickup('missile'); pickupT = rand(14, 22); }
+    if ((shieldT -= dt) <= 0) { spawnPickup('shield'); shieldT = rand(20, 30); }
+    for (let i = pickups.length - 1; i >= 0; i--) {
+      const k = pickups[i];
+      k.x += k.vx * dt; k.y += k.vy * dt; wrap(k);
+      if ((k.life -= dt) <= 0) { pickups.splice(i, 1); continue; }
+      if (ship.alive && dist2(k, ship) < 20 * 20) {
+        pickups.splice(i, 1);
+        addScore(50); updateHud();
+        if (k.kind === 'shield') { if (shieldCharges < MAX_SHIELDS) shieldCharges++; addFloater(k.x, k.y - 14, '+1 shield', theme.blue); sfx.shieldUp(); }
+        else { if (missilesHeld < MAX_MISSILES) missilesHeld++; addFloater(k.x, k.y - 14, '+1 missile', theme.accent); sfx.pickup(); }
+      }
+    }
+  }
+  function spawnPickup(kind) {
+    const a = rand(0, Math.PI * 2);
+    pickups.push({ kind, x: rand(30, LW - 30), y: rand(80, LH - 80), vx: Math.cos(a) * 28, vy: Math.sin(a) * 28, life: 14 });
+  }
+  function hitShip() {                          // a shield layer takes the hit instead of the ship
+    if (shieldCharges > 0) {
+      shieldCharges--; ship.inv = 1.2;
+      burst(ship.x, ship.y, theme.blue, 14);
+      blasts.push({ x: ship.x, y: ship.y, t: 0, max: 0.35, r: 32, color: theme.blue });
+      sfx.shieldHit();
+      return;
+    }
+    killShip();
+  }
+
   function killShip() {
     run.lives = Math.max(0, run.lives - 1);
     ship.alive = false; ship.respawn = 1.4;
@@ -65,18 +141,18 @@
       if (dist2(ship, r) < rr * rr) {
         burst(r.x, r.y, theme.text, 4 + r.size * 4);
         splitRock(j);
-        killShip();
+        hitShip();
         return;
       }
     }
     if (seeker && dist2(ship, seeker) < (14 + SHIP_R) ** 2) {
       burst(seeker.x, seeker.y, theme.text, 12);
       seeker = null; seekerTimer = rand(16, 26);
-      killShip();
+      hitShip();
       return;
     }
     for (const s of sShots) {
-      if (dist2(ship, s) < (SHIP_R + 2) ** 2) { killShip(); return; }
+      if (dist2(ship, s) < (SHIP_R + 2) ** 2) { sShots.splice(sShots.indexOf(s), 1); hitShip(); return; }
     }
   }
 
@@ -97,6 +173,11 @@
     }
     ctx.closePath();
     ctx.fill();
+  }
+  function missileIcon(x, y) {
+    ctx.beginPath();
+    ctx.moveTo(x, y - 6); ctx.lineTo(x + 2.5, y - 2); ctx.lineTo(x + 2.5, y + 5);
+    ctx.lineTo(x - 2.5, y + 5); ctx.lineTo(x - 2.5, y - 2); ctx.closePath(); ctx.fill();
   }
   function draw() {
     ctx.save();
@@ -137,6 +218,34 @@
       ctx.globalAlpha = 1;
     }
 
+    for (const k of pickups) {                   // pickups fade in their last seconds
+      ctx.globalAlpha = k.life < 3 ? 0.4 + 0.6 * Math.abs(Math.sin(k.life * 5)) : 1;
+      if (k.kind === 'shield') {
+        ctx.fillStyle = hexA(theme.blue, 0.35); ctx.beginPath(); ctx.arc(k.x, k.y, 10, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = theme.blue; ctx.lineWidth = 1.25; ctx.stroke();
+      } else {
+        ctx.strokeStyle = theme.accent; ctx.fillStyle = theme.accent; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(k.x, k.y, 9, 0, Math.PI * 2); ctx.stroke();
+        missileIcon(k.x, k.y);
+      }
+      ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = theme.accent;
+    for (const m of missiles) { ctx.save(); ctx.translate(m.x, m.y); ctx.rotate(m.a + Math.PI / 2); missileIcon(0, 0); ctx.restore(); }
+    for (const b of blasts) {
+      const p = b.t / b.max;
+      ctx.globalAlpha = reduceMotion ? 0.3 : 1 - p; ctx.strokeStyle = b.color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(b.x, b.y, reduceMotion ? b.r : b.r * (0.3 + 0.7 * p), 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (ship.alive && shieldCharges > 0) {       // shield: a soft blue bubble, a second ring for the second layer
+      ctx.fillStyle = hexA(theme.blue, 0.1); ctx.strokeStyle = hexA(theme.blue, 0.9); ctx.lineWidth = 1.25;
+      ctx.beginPath(); ctx.arc(ship.x, ship.y, 18 + (shieldCharges - 1) * 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      if (shieldCharges > 1) { ctx.strokeStyle = hexA(theme.blue, 0.45); ctx.beginPath(); ctx.arc(ship.x, ship.y, 18, 0, Math.PI * 2); ctx.stroke(); }
+    }
+    for (let i = 0; i < MAX_MISSILES; i++) { ctx.fillStyle = i < missilesHeld ? theme.accent : theme.border; missileIcon(18 + i * 12, 18); }
+    for (let i = 0; i < MAX_SHIELDS; i++) { ctx.fillStyle = i < shieldCharges ? theme.blue : theme.border; ctx.beginPath(); ctx.arc(68 + i * 12, 18, 4.5, 0, Math.PI * 2); ctx.fill(); }
+
     if (stick && shell.mode === 'play') {        // joystick guide: inner ring aims, outer ring thrusts
       ctx.lineWidth = 1 / view.scale;
       ctx.strokeStyle = theme.border;
@@ -150,11 +259,11 @@
 
   return {
     id: 'fracture', name: 'Fracture Field', hiKey: 'fractureField.highScore',
-    howTo: 'Touch the lower half and drag a little to aim or further to thrust; your ship fires while your finger is down.',
+    howTo: 'Touch the lower half and drag a little to aim or further to thrust; your ship fires while your finger is down. Double tap for a missile, and catch blue orbs for shields.',
     keysHint: 'Keyboard: left and right to turn, up to thrust, space to fire, P to pause.',
     overText: best => best ? 'A new best score before the field closed in.' : 'The field closed in this time.',
     bannerY: 300, extraLifeEvery: 10000,
-    reset, start, idle, update, draw, pointerDown, pointerMove, release
+    reset, start, idle, update, draw, pointerDown, pointerMove, release, keyDown
   };
 })();
 
@@ -177,7 +286,8 @@ const Layline = (() => {
   const LINE_PTS = [0, 100, 300, 500, 800];
   const LABEL_FONT = '500 12px -apple-system, system-ui, sans-serif';
 
-  let board, piece, next, bag, lines, fallT, lockT, resets, clearing, intro, overTimer, touch, lastTap;
+  let board, piece, next, bag, lines, fallT, lockT, resets, clearing, intro, overTimer, touch;
+  const FLICK_DIST = 70, FLICK_SPEED = 0.9;     // a drop needs a clear, quick swipe down: 70 px at 0.9 px/ms or faster
 
   /* ----- setup ----- */
   const emptyBoard = () => Array.from({ length: BH }, () => new Array(BW).fill(0));
@@ -190,7 +300,7 @@ const Layline = (() => {
   }
   function reset() {                            // idle scene: a half-built stack
     board = emptyBoard(); bag = []; piece = null; next = drawFromBag();
-    lines = 0; fallT = 0; lockT = 0; resets = 0; clearing = null; intro = 0; overTimer = 0; touch = null; lastTap = null;
+    lines = 0; fallT = 0; lockT = 0; resets = 0; clearing = null; intro = 0; overTimer = 0; touch = null;
     for (let y = BH - 5; y < BH; y++) {
       const gap = Math.floor(Math.random() * BW);
       for (let x = 0; x < BW; x++) board[y][x] = x !== gap && (y > BH - 4 || Math.random() < 0.55) ? 1 : 0;
@@ -305,11 +415,17 @@ const Layline = (() => {
     else lockT = 0;
   }
 
-  /* ----- input: drag to move or ease down, tap to turn, double tap to drop ----- */
+  /* ----- input: drag to move or ease down, flick down to drop, tap to turn ----- */
   const canAct = () => piece && !clearing && intro <= 0 && overTimer <= 0;
-  function pointerDown(lx, ly) { touch = { sx: lx, sy: ly, ax: lx, ay: ly, t: performance.now(), moved: false }; }
+  function pointerDown(lx, ly) {
+    const now = performance.now();
+    touch = { sx: lx, sy: ly, ax: lx, ay: ly, t: now, moved: false, trail: [[ly, now]] };
+  }
   function pointerMove(lx, ly) {
-    if (!touch || !canAct()) return;
+    if (!touch) return;
+    touch.trail.push([ly, performance.now()]);
+    if (touch.trail.length > 30) touch.trail.shift();
+    if (!canAct()) return;
     const step = CELL * 0.8;
     while (lx - touch.ax >= step) { touch.ax += step; touch.moved = true; if (tryMove(1, 0)) sfx.move(); }
     while (touch.ax - lx >= step) { touch.ax -= step; touch.moved = true; if (tryMove(-1, 0)) sfx.move(); }
@@ -319,20 +435,16 @@ const Layline = (() => {
   }
   function pointerUp(lx, ly) {
     if (!touch) return;
-    const dt = performance.now() - touch.t, dx = lx - touch.sx, dy = ly - touch.sy;
-    const isTap = !touch.moved && Math.hypot(dx, dy) < 12 && dt < 350;
+    const now = performance.now(), dx = lx - touch.sx, dy = ly - touch.sy;
+    const isTap = !touch.moved && Math.hypot(dx, dy) < 12 && now - touch.t < 350;
+    // a flick: far enough, clearly downward, and still fast at the moment you let go (slow easing never drops)
+    const from = touch.trail.find(([, t]) => now - t <= 140) || touch.trail[0];
+    const speed = (ly - from[0]) / Math.max(16, now - from[1]);
+    const flick = dy > FLICK_DIST && dy > Math.abs(dx) * 2.5 && speed > FLICK_SPEED;
     touch = null;
-    if (!isTap || !canAct()) return;
-    const now = performance.now();
-    if (lastTap && lastTap.piece === piece && now - lastTap.t < 320) {
-      // second tap: undo the turn from the first tap, then drop all the way
-      piece.cells = lastTap.cells; piece.x = lastTap.x; piece.y = lastTap.y;
-      lastTap = null;
-      hardDrop();
-      return;
-    }
-    lastTap = { piece, t: now, cells: piece.cells.map(c => c.slice()), x: piece.x, y: piece.y };
-    rotate(lx < BX + BW * CELL / 2 ? -1 : 1);
+    if (!canAct()) return;
+    if (flick) hardDrop();
+    else if (isTap) rotate(lx < BX + BW * CELL / 2 ? -1 : 1);
   }
   function release() { touch = null; }
   function keyDown(k, repeat) {
@@ -394,7 +506,7 @@ const Layline = (() => {
 
   return {
     id: 'layline', name: 'Layline', hiKey: 'layline.highScore',
-    howTo: 'Drag sideways to move a piece and down to ease it lower; tap to turn it, double tap to drop it.',
+    howTo: 'Drag sideways to move a piece and slowly down to ease it lower; flick down to drop it, and tap to turn it.',
     keysHint: 'Keyboard: left and right to move, up or Z to turn, down to ease, space to drop, P to pause.',
     overText: best => best ? 'A new best score before the stack reached the top.' : 'The stack reached the top this time.',
     bannerY: 300, extraLifeEvery: 0, noLives: true, touchAnywhere: true, waveLabel: 'Level',
