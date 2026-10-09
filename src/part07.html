@@ -19,7 +19,11 @@ const Switchback = (() => {
     runner:   { shape: 'triangle', r: 8,  hp: 2,  speed: 66, coins: 4,  pts: 15,  leak: 1 },
     brute:    { shape: 'square',   r: 10, hp: 10, speed: 24, coins: 10, pts: 40,  leak: 2 },
     armored:  { shape: 'hex',      r: 9,  hp: 6,  speed: 30, coins: 8,  pts: 30,  leak: 2, armor: 1 },
-    colossus: { shape: 'boss',     r: 15, hp: 60, speed: 17, coins: 60, pts: 400, leak: 5, armor: 1 }
+    // bosses, one per chapter, each asking for a different answer
+    colossus:   { shape: 'boss',    r: 15, hp: 60, speed: 17, coins: 60, pts: 400, leak: 5, armor: 1, boss: true },  // sheer bulk
+    brood:      { shape: 'brood',   r: 14, hp: 48, speed: 20, coins: 60, pts: 450, leak: 5, boss: true },            // spawns walkers: needs splash
+    phantom:    { shape: 'phantom', r: 13, hp: 52, speed: 24, coins: 60, pts: 500, leak: 5, boss: true },            // vanishes and leaps ahead: needs depth
+    juggernaut: { shape: 'jugg',    r: 16, hp: 90, speed: 15, coins: 80, pts: 600, leak: 5, armor: 2, boss: true }   // heavy armour, heals: needs Lances
   };
   const SANS = '-apple-system, system-ui, sans-serif';
 
@@ -53,10 +57,13 @@ const Switchback = (() => {
     towers.push(t);
     return t;
   }
-  function addFoe(type, d) {
-    const f = FOES[type], hpMul = 1 + 0.32 * (run.wave - 1) + 0.045 * (run.wave - 1) ** 2;
+  function addFoe(type, d, boss) {
+    const w = easedWave(shell.game, run.wave), f = FOES[type];
+    const hp = boss
+      ? f.hp * (1 + 0.15 * (w - 1)) * (1 + 0.6 * boss.tier)         // bosses grow gently: a test, not a wall
+      : f.hp * (1 + 0.32 * (w - 1) + 0.045 * (w - 1) ** 2);
     const [x, y, a] = posAt(d);
-    foes.push({ type, d, x, y, a, hp: f.hp * hpMul, max: f.hp * hpMul, slow: 1, slowT: 0, flash: 0, dead: false });
+    foes.push({ type, d, x, y, a, hp, max: hp, slow: 1, slowT: 0, flash: 0, dead: false, name: boss ? boss.name : '', spawnT: 3, shroud: 0, shroudT: 3 });
   }
   function clear() {
     towers = []; foes = []; bullets = []; rings = []; beams = [];
@@ -69,7 +76,7 @@ const Switchback = (() => {
     placeTower('dart', 3, 3); placeTower('frost', 4, 6); placeTower('burst', 5, 9);
     for (const d of [140, 330, 470, 610]) addFoe('walker', d);
   }
-  function start() { clear(); countdown = 15; }
+  function start() { clear(); coins += 130 * chapterOf(shell.game, run.wave); countdown = 15; }   // later chapters start with more coins
 
   /* ----- waves ----- */
   function startWave() {
@@ -77,11 +84,13 @@ const Switchback = (() => {
     const w = run.wave, n = 8 + 3 * w;
     queue = [];
     for (let i = 0; i < n; i++) {
-      queue.push(w >= 4 && i % 4 === 3 ? 'armored' : w >= 3 && i % 5 === 4 ? 'brute' : w >= 2 && i % 3 === 1 ? 'runner' : 'walker');
+      // armour is introduced gently: just a couple in wave 4, then every fourth enemy
+      queue.push(w >= 4 && i % (w === 4 ? 8 : 4) === 3 ? 'armored' : w >= 3 && i % 5 === 4 ? 'brute' : w >= 2 && i % 3 === 1 ? 'runner' : 'walker');
     }
-    if (w % 5 === 0) queue.push('colossus');      // every fifth wave ends with the Colossus
+    const info = chapterInfo(shell.game, chapterOf(shell.game, w));
+    if (w % 5 === 0) queue.push({ boss: info.kind, name: info.boss, tier: info.tier });   // the chapter's boss closes its last wave
     waveActive = true; spawnT = 0;
-    showBanner(w % 5 === 0 ? 'The Colossus' : 'Wave ' + w);
+    if (w % 5 === 0) showBanner(info.boss, 'Boss wave'); else waveBanner(shell.game);
     sfx.wave();
   }
   function endWave() {
@@ -123,7 +132,7 @@ const Switchback = (() => {
 
   /* ----- update ----- */
   function damage(f, n, pierce) {
-    if (f.dead) return;
+    if (f.dead || f.shroud > 0) return;          // a shrouded Phantom can't be touched
     const armor = FOES[f.type].armor || 0;
     if (armor && !pierce) n = Math.max(n * 0.3, n - armor);   // armour blunts weak hits
     f.hp -= n; f.flash = 0.08;
@@ -133,10 +142,11 @@ const Switchback = (() => {
     coins += spec.coins;
     registerHit(spec.pts, f.x, f.y, theme.text, false, 10);
     sfx.hit(run.mult);
+    if (spec.boss) bossDefeated(f.name);
   }
   function firstInRange(x, y, range) {    // the foe furthest along the road
     let best = null;
-    for (const f of foes) if (!f.dead && (f.x - x) ** 2 + (f.y - y) ** 2 <= range * range && (!best || f.d > best.d)) best = f;
+    for (const f of foes) if (!f.dead && !(f.shroud > 0) && (f.x - x) ** 2 + (f.y - y) ** 2 <= range * range && (!best || f.d > best.d)) best = f;
     return best;
   }
 
@@ -148,14 +158,21 @@ const Switchback = (() => {
     if (!waveActive) { countdown -= dt; if (countdown <= 0) startWave(); }
     else {
       spawnT -= dt;
-      if (spawnT <= 0 && queue.length) { addFoe(queue.shift(), 0); spawnT = Math.max(0.38, 1.0 - 0.04 * run.wave); }
+      if (spawnT <= 0 && queue.length) { const q = queue.shift(); if (typeof q === 'string') addFoe(q, 0); else addFoe(q.boss, 0, q); spawnT = Math.max(0.38, 1.0 - 0.04 * run.wave); }
     }
 
     // foes walk the road
+    const born = [];
     for (const f of foes) {
       if (f.dead) continue;
       f.flash = Math.max(0, f.flash - dt);
       f.slowT = Math.max(0, f.slowT - dt);
+      if (f.type === 'brood' && (f.spawnT -= dt) <= 0) { born.push(f.d - 12, f.d - 26); f.spawnT = 3; }
+      if (f.type === 'phantom') {
+        f.shroud = Math.max(0, f.shroud - dt);
+        if ((f.shroudT -= dt) <= 0) { f.shroud = 1.2; f.d += 50; f.shroudT = 4; }
+      }
+      if (f.type === 'juggernaut') f.hp = Math.min(f.max, f.hp + f.max * 0.015 * dt);
       f.d += FOES[f.type].speed * (f.slowT > 0 ? f.slow : 1) * dt;
       if (f.d >= roadLen) {                    // got through
         f.dead = true;
@@ -168,6 +185,7 @@ const Switchback = (() => {
       }
       [f.x, f.y, f.a] = posAt(f.d);
     }
+    for (const d of born) addFoe('walker', Math.max(0, d));   // the Brood Mother's young
 
     // towers act
     for (const t of towers) {
@@ -186,7 +204,7 @@ const Switchback = (() => {
       }
       if (t.type === 'lance') {                  // instant piercing shot at the toughest foe in range
         let target = null;
-        for (const f of foes) if (!f.dead && (f.x - t.x) ** 2 + (f.y - t.y) ** 2 <= range * range && (!target || f.hp > target.hp)) target = f;
+        for (const f of foes) if (!f.dead && !(f.shroud > 0) && (f.x - t.x) ** 2 + (f.y - t.y) ** 2 <= range * range && (!target || f.hp > target.hp)) target = f;
         if (!target) continue;
         t.angle = Math.atan2(target.y - t.y, target.x - t.x);
         if (t.cd > 0) continue;
@@ -204,7 +222,7 @@ const Switchback = (() => {
           const [px, py] = path[path.length - 1];
           path.push([(px + cur.x) / 2 + rand(-6, 6), (py + cur.y) / 2 + rand(-6, 6)], [cur.x, cur.y]);
           let next = null, nd = 60 * 60;
-          for (const f of foes) { const d = (f.x - cur.x) ** 2 + (f.y - cur.y) ** 2; if (!f.dead && !hit.includes(f) && d < nd) { nd = d; next = f; } }
+          for (const f of foes) { const d = (f.x - cur.x) ** 2 + (f.y - cur.y) ** 2; if (!f.dead && !(f.shroud > 0) && !hit.includes(f) && d < nd) { nd = d; next = f; } }
           cur = next;
         }
         hit.forEach(f => damage(f, dmg));
@@ -363,11 +381,23 @@ const Switchback = (() => {
       } else if (spec.shape === 'boss') {        // the Colossus: big block with a hollow centre
         rr(f.x - spec.r, f.y - spec.r, spec.r * 2, spec.r * 2, 5); ctx.fill();
         ctx.fillStyle = theme.bg; rr(f.x - 5, f.y - 5, 10, 10, 2); ctx.fill();
+      } else if (spec.shape === 'brood') {       // the Brood Mother: a round body with a ring of young
+        ctx.beginPath(); ctx.arc(f.x, f.y, spec.r, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(f.x, f.y, 8, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = theme.text; ctx.beginPath(); ctx.arc(f.x, f.y, 4, 0, Math.PI * 2); ctx.fill();
+      } else if (spec.shape === 'phantom') {     // the Phantom: a pale arrowhead, faint while shrouded
+        ctx.globalAlpha = f.shroud > 0 ? 0.18 : 1;
+        ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.a);
+        ctx.beginPath(); ctx.moveTo(spec.r + 3, 0); ctx.lineTo(-spec.r, -spec.r); ctx.lineTo(-spec.r * 0.4, 0); ctx.lineTo(-spec.r, spec.r); ctx.closePath(); ctx.fill();
+        ctx.restore(); ctx.globalAlpha = 1;
+      } else if (spec.shape === 'jugg') {        // the Juggernaut: armoured block with two plates
+        rr(f.x - spec.r, f.y - spec.r, spec.r * 2, spec.r * 2, 3); ctx.fill();
+        ctx.fillStyle = theme.bg; ctx.fillRect(f.x - 10, f.y - 6, 20, 3); ctx.fillRect(f.x - 10, f.y + 3, 20, 3);
       }
       else drawShape(spec.shape, f.x, f.y, spec.r * 2);
       if (f.slowT > 0) { ctx.strokeStyle = hexA(theme.blue, 0.85); ctx.lineWidth = 1.25; ctx.beginPath(); ctx.arc(f.x, f.y, spec.r + 4, 0, Math.PI * 2); ctx.stroke(); }
-      if (f.hp < f.max || f.type === 'colossus') {
-        const bw = f.type === 'colossus' ? 34 : 18;
+      if (f.hp < f.max || spec.boss) {
+        const bw = spec.boss ? 34 : 18;
         ctx.fillStyle = theme.border; ctx.fillRect(f.x - bw / 2, f.y - spec.r - 7, bw, 2.5);
         ctx.fillStyle = theme.text; ctx.fillRect(f.x - bw / 2, f.y - spec.r - 7, bw * Math.max(0, f.hp / f.max), 2.5);
       }
@@ -432,6 +462,13 @@ const Switchback = (() => {
     keysHint: 'Click squares and towers; 1 to 5 build, U upgrades, space starts the wave, P pauses.',
     overText: best => best ? 'A new best score. The road held for a long time.' : 'Too many got through this time.',
     bannerY: 300, extraLifeEvery: 0, noLives: true, touchAnywhere: true,
+    chapterLength: 5,
+    chapters: [
+      { place: 'The Valley', boss: 'The Colossus', kind: 'colossus' },
+      { place: 'The Hollows', boss: 'The Brood Mother', kind: 'brood' },
+      { place: 'The Mist', boss: 'The Phantom', kind: 'phantom' },
+      { place: 'The Iron Road', boss: 'The Juggernaut', kind: 'juggernaut' }
+    ],
     reset, start, update, draw, pointerDown, pointerMove, pointerUp, release, keyDown
   };
 })();
@@ -441,13 +478,13 @@ const Switchback = (() => {
    ===================================================================== */
 const Snake = (() => {
   const CELL = 20, COLS = 18, ROWS = 30, BY = 24;          // board: 360 × 600 from y = 24
-  const SWIPE = 18;                                         // drag distance that counts as a turn
+  const STICK_DEAD = 12, STICK_MAX = 46;                   // thumb-stick: dead zone and ring size
   // its own tune and eating sound, added here so the shared audio code stays untouched
   SONGS.snake = { bpm: 100, root: 55, scale: 'major', prog: [0, 3, 4, 3], bass: 'x...x...x...x...', kick: 'x.......x.......', hat: '..x...x...x...x.', density: 0.45, seed: 17 };
   { const s = SONGS.snake, r = seeded(s.seed); s.arp = []; for (let i = 0; i < 32; i++) s.arp.push(r() < (i % 2 === 0 ? s.density : s.density * 0.15) ? Math.floor(r() * 5) : -1); }
   sfx.eat = () => audio.tone(660, 0.08, { type: 'triangle', to: 990, gain: 0.06 });
 
-  let body, prev, dir, turns, tickT, speed, food, bonus, bonusTimer, blocks, eaten, comboT, overTimer, intro, touch, alive;
+  let body, prev, dir, turns, tickT, speed, food, bonus, bonusTimer, blocks, eaten, comboT, overTimer, intro, stick, alive;
 
   const cx = c => (c + 0.5) * CELL, cy = r => BY + (r + 0.5) * CELL;
   const onSnake = (c, r) => body.some(s => s.c === c && s.r === r);
@@ -466,14 +503,14 @@ const Snake = (() => {
 
   /* ----- setup ----- */
   function reset() {               // idle scene: a resting snake and a piece of food
-    blocks = []; turns = []; touch = null; bonus = null; overTimer = 0; intro = 0; alive = true; tickT = 0; speed = 7;
+    blocks = []; turns = []; stick = null; bonus = null; overTimer = 0; intro = 0; alive = true; tickT = 0; speed = 7;
     body = [[9, 12], [9, 13], [9, 14], [10, 14], [11, 14], [11, 15], [11, 16], [10, 16], [9, 16], [8, 16]].map(([c, r]) => ({ c, r }));
     prev = body.map(s => ({ ...s }));
     dir = { x: 0, y: -1 };
     food = { c: 9, r: 7 };
   }
   function start() {
-    blocks = []; turns = []; touch = null; bonus = null; overTimer = 0; alive = true;
+    blocks = []; turns = []; stick = null; bonus = null; overTimer = 0; alive = true;
     body = [0, 1, 2, 3].map(i => ({ c: 9, r: 20 + i }));
     prev = body.map(s => ({ ...s }));
     dir = { x: 0, y: -1 };
@@ -490,12 +527,27 @@ const Snake = (() => {
     if ((d.x === last.x && d.y === last.y) || (d.x === -last.x && d.y === -last.y)) return;
     if (turns.length < 2) turns.push(d);
   }
+  function steer() {                // the thumb-stick points where to go; pulling straight back turns you round via the side
+    if (!stick || Math.hypot(stick.dx, stick.dy) < STICK_DEAD) return;
+    const cur = turns.length ? turns[turns.length - 1] : dir;
+    let d = Math.abs(stick.dx) > Math.abs(stick.dy) ? { x: Math.sign(stick.dx), y: 0 } : { x: 0, y: Math.sign(stick.dy) };
+    if (d.x === -cur.x && d.y === -cur.y) d = d.x ? { x: 0, y: Math.sign(stick.dy) || 1 } : { x: Math.sign(stick.dx) || 1, y: 0 };
+    const before = turns.length;
+    turn(d);
+    if (turns.length > before) {    // re-centre just behind the thumb, so the next small move reads as a clean new direction
+      const fx = stick.ox + stick.dx, fy = stick.oy + stick.dy;
+      stick.ox = fx - d.x * (STICK_DEAD + 2); stick.oy = fy - d.y * (STICK_DEAD + 2);
+      stick.dx = d.x * (STICK_DEAD + 2); stick.dy = d.y * (STICK_DEAD + 2);
+    }
+  }
   function step() {
+    if (!turns.length) steer();
     if (turns.length) dir = turns.shift();
-    const old = body, h = old[0], nc = h.c + dir.x, nr = h.r + dir.y;
+    const old = body, h = old[0];
+    const nc = (h.c + dir.x + COLS) % COLS, nr = (h.r + dir.y + ROWS) % ROWS;   // the edges are open: out one side, in the other
     const eats = food && food.c === nc && food.r === nr;
     const hitsSelf = old.some((s, i) => s.c === nc && s.r === nr && !(i === old.length - 1 && !eats));
-    if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS || hitsSelf || onBlock(nc, nr)) { die(); return; }
+    if (hitsSelf || onBlock(nc, nr)) { die(); return; }
     body = [{ c: nc, r: nr }, ...old.slice(0, eats ? old.length : old.length - 1)];
     prev = body.map((s, i) => i === 0 ? old[0] : (old[i] || old[i - 1]));   // where each part was, for smooth drawing
     if (eats) eat(nc, nr);
@@ -516,7 +568,7 @@ const Snake = (() => {
       run.wave++;
       showBanner('Level ' + run.wave);
       sfx.wave();
-      if (run.wave >= 3) for (let i = 0; i < 2; i++) { const b = freeCell(6); if (b) blocks.push(b); }
+      if (run.wave >= 2) for (let i = 0; i < (run.wave >= 5 ? 3 : 2); i++) { const b = freeCell(6); if (b) blocks.push(b); }   // open walls, so blocks bring the challenge
     }
   }
   function die() {
@@ -546,16 +598,25 @@ const Snake = (() => {
     while (alive && tickT >= every) { tickT -= every; step(); }
   }
 
-  /* ----- input: swipe to turn (keep your finger down and keep steering) ----- */
-  function pointerDown(lx, ly) { touch = { x: lx, y: ly }; }
+  /* ----- input: a floating thumb-stick anywhere on screen; hold a direction and the snake keeps it ----- */
+  function pointerDown(lx, ly) { stick = { ox: lx, oy: ly, dx: 0, dy: 0 }; }
   function pointerMove(lx, ly) {
-    if (!touch) return;
-    const dx = lx - touch.x, dy = ly - touch.y;
-    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE) return;
-    turn(Math.abs(dx) > Math.abs(dy) ? { x: Math.sign(dx), y: 0 } : { x: 0, y: Math.sign(dy) });
-    touch = { x: lx, y: ly };
+    if (!stick) return;
+    let dx = lx - stick.ox, dy = ly - stick.oy;
+    const len = Math.hypot(dx, dy);
+    if (len > STICK_MAX) {         // drag the ring along so changing direction is quick
+      stick.ox = lx - dx / len * STICK_MAX; stick.oy = ly - dy / len * STICK_MAX;
+      dx = lx - stick.ox; dy = ly - stick.oy;
+    }
+    const h = turns.length ? turns[turns.length - 1] : dir, along = dx * h.x + dy * h.y, keep = STICK_DEAD + 2;
+    if (along > keep) {            // moving further the way you already go: slide the centre along, so sideways moves read at once
+      stick.ox += h.x * (along - keep); stick.oy += h.y * (along - keep);
+      dx -= h.x * (along - keep); dy -= h.y * (along - keep);
+    }
+    stick.dx = dx; stick.dy = dy;
+    if (!turns.length) steer();    // react right away, not only on the next step
   }
-  function release() { touch = null; }
+  function release() { stick = null; }
   function keyDown(k) {
     const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1], a: [-1, 0], d: [1, 0], w: [0, -1], s: [0, 1] }[k];
     if (!d) return false;
@@ -572,9 +633,11 @@ const Snake = (() => {
   function draw() {
     const hair = 1 / view.scale, t = shell.mode === 'play' && alive ? clamp(tickT * speed, 0, 1) : 1;
     ctx.lineWidth = hair; ctx.strokeStyle = theme.border;
+    ctx.setLineDash([6, 6]);                     // dashed edge: the walls are open
     rr(2, BY - 2, COLS * CELL - 4, ROWS * CELL + 4, 12); ctx.stroke();
+    ctx.setLineDash([]);
 
-    ctx.fillStyle = theme.muted;                 // blocks that appear from level 3
+    ctx.fillStyle = theme.muted;                 // blocks that appear from level 2
     for (const b of blocks) { rr(b.c * CELL + 3, BY + b.r * CELL + 3, CELL - 6, CELL - 6, 4); ctx.fill(); }
 
     if (food) {                                  // food, breathing gently
@@ -590,21 +653,41 @@ const Snake = (() => {
       ctx.beginPath(); ctx.arc(x, y, 11, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (bonus.life / bonus.max)); ctx.stroke();
     }
 
-    // the snake: one smooth rounded line through its cells, with the head and tail eased between steps
-    const n = body.length, lerp = (a, b) => [cx(a.c) + (cx(b.c) - cx(a.c)) * t, cy(a.r) + (cy(b.r) - cy(a.r)) * t];
-    const ptsList = [lerp(prev[0], body[0])];
-    for (let i = 1; i < n; i++) ptsList.push([cx(body[i].c), cy(body[i].r)]);
-    ptsList.push(lerp(prev[n - 1], body[n - 1]));
-    ctx.strokeStyle = theme.accent; ctx.lineWidth = 14; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.beginPath(); ptsList.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
-    const [hx, hy] = ptsList[0];
-    ctx.fillStyle = theme.accent; ctx.beginPath(); ctx.arc(hx, hy, 8, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(hx + dir.x * 3.5, hy + dir.y * 3.5, 2, 0, Math.PI * 2); ctx.fill();
+    // the snake: one smooth rounded line through its cells, head and tail eased between steps.
+    // Its path is "unwrapped" into one continuous line and drawn with copies shifted by the board size,
+    // so it slides out of one edge and in at the other.
+    const W = COLS * CELL, H = ROWS * CELL, n = body.length;
+    const wd = (a, b) => {
+      let dc = b.c - a.c, dr = b.r - a.r;
+      if (dc > 1) dc -= COLS; if (dc < -1) dc += COLS; if (dr > 1) dr -= ROWS; if (dr < -1) dr += ROWS;
+      return [dc * CELL, dr * CELL];
+    };
+    let px = cx(body[1].c), py = cy(body[1].r);
+    const hd = wd(body[1], body[0]), path = [[px + hd[0] * t, py + hd[1] * t], [px, py]];
+    for (let i = 2; i < n; i++) { const d = wd(body[i - 1], body[i]); px += d[0]; py += d[1]; path.push([px, py]); }
+    const td = wd(body[n - 1], prev[n - 1]);
+    path.push([px + td[0] * (1 - t), py + td[1] * (1 - t)]);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, BY, W, H); ctx.clip();
+    ctx.strokeStyle = theme.accent; ctx.fillStyle = theme.accent; ctx.lineWidth = 14; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const ox of [-W, 0, W]) for (const oy of [-H, 0, H]) {
+      ctx.beginPath(); path.forEach(([x, y], i) => i ? ctx.lineTo(x + ox, y + oy) : ctx.moveTo(x + ox, y + oy)); ctx.stroke();
+      const [hx, hy] = path[0];
+      ctx.fillStyle = theme.accent; ctx.beginPath(); ctx.arc(hx + ox, hy + oy, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = theme.bg; ctx.beginPath(); ctx.arc(hx + ox + dir.x * 3.5, hy + oy + dir.y * 3.5, 2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+
+    if (stick && shell.mode === 'play') {        // thumb-stick guide
+      ctx.lineWidth = 1 / view.scale; ctx.strokeStyle = theme.border;
+      ctx.beginPath(); ctx.arc(stick.ox, stick.oy, STICK_MAX, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = theme.muted; ctx.beginPath(); ctx.arc(stick.ox + stick.dx, stick.oy + stick.dy, 7, 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   return {
     id: 'snake', name: 'Snake', hiKey: 'snake.highScore',
-    howTo: 'Swipe in any direction to turn; eat to grow, and stay clear of the walls and your own tail.',
+    howTo: 'Touch anywhere and drag the way you want to go; the edges let you through, but blocks and your own tail do not.',
     keysHint: 'Keyboard: arrow keys or WASD to turn, P to pause.',
     overText: best => best ? 'A new best score. That was a long snake.' : 'The snake ran into trouble this time.',
     bannerY: 300, extraLifeEvery: 0, noLives: true, touchAnywhere: true, waveLabel: 'Level',
@@ -612,446 +695,3 @@ const Snake = (() => {
   };
 })();
 
-const GAMES = { drift: DriftDefense, fracture: FractureField, layline: Layline, headway: Headway, switchback: Switchback, snake: Snake };
-// Names players see come from the game picker, so renaming a game only means changing its tile.
-// Each module above keeps its working title in code; ids and saved scores are unchanged.
-document.querySelectorAll('[data-game]').forEach(b => { const g = GAMES[b.dataset.game]; if (g) g.name = b.querySelector('.cname').textContent; });
-
-/* =====================================================================
-   INPUT — pointer on the lower half goes to the active game; keyboard
-   ===================================================================== */
-let pointerId = null, stageRect = null;
-function toLogical(e) {
-  return { x: (e.clientX - stageRect.left - view.ox) / view.scale, y: (e.clientY - stageRect.top - view.oy) / view.scale };
-}
-window.addEventListener('pointerdown', e => {
-  if (shell.mode !== 'play' || pointerId !== null) return;
-  if (e.target.closest && e.target.closest('button, #topbar, .overlay:not([hidden])')) return;
-  if (!shell.game.touchAnywhere && e.clientY < window.innerHeight / 2) return;   // lower half only (most games)
-  stageRect = stage.getBoundingClientRect();
-  pointerId = e.pointerId;
-  const p = toLogical(e);
-  shell.game.pointerDown(p.x, p.y);
-  e.preventDefault();
-});
-window.addEventListener('pointermove', e => {
-  if (e.pointerId !== pointerId || shell.mode !== 'play') return;
-  const p = toLogical(e);
-  shell.game.pointerMove(p.x, p.y);
-});
-const endPointer = e => {
-  if (e.pointerId !== pointerId) return;
-  pointerId = null;
-  if (shell.game.pointerUp && e.type === 'pointerup' && shell.mode === 'play') { const p = toLogical(e); shell.game.pointerUp(p.x, p.y); }
-  shell.game.release();
-};
-window.addEventListener('pointerup', endPointer);
-window.addEventListener('pointercancel', endPointer);
-
-document.addEventListener('touchmove', e => {
-  if (e.target.closest && e.target.closest('.overlay:not([hidden])')) return;   // menus may scroll
-  e.preventDefault();
-}, { passive: false });
-['gesturestart', 'dblclick', 'contextmenu'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
-
-const KEYMAP = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
-window.addEventListener('keydown', e => {
-  const k = e.key;
-  if (shell.mode === 'name') {                 // typing letters, arrows to adjust, Enter to save
-    const onButton = document.activeElement && document.activeElement.tagName === 'BUTTON';
-    if (/^[a-z0-9]$/i.test(k)) { nameEntry.letters[nameEntry.cur] = k.toUpperCase(); nameEntry.cur = Math.min(2, nameEntry.cur + 1); renderInitials(); }
-    else if (k === 'ArrowUp') stepLetter(nameEntry.cur, 1);
-    else if (k === 'ArrowDown') stepLetter(nameEntry.cur, -1);
-    else if (k === 'ArrowLeft' || k === 'Backspace') { nameEntry.cur = Math.max(0, nameEntry.cur - 1); renderInitials(); }
-    else if (k === 'ArrowRight') { nameEntry.cur = Math.min(2, nameEntry.cur + 1); renderInitials(); }
-    else if (k === 'Enter' && !onButton) saveName();
-    else return;
-    e.preventDefault();
-    return;
-  }
-  if (k === 'p' || k === 'P' || k === 'Escape') {
-    if (shell.mode === 'play') pause(); else if (shell.mode === 'paused') resume();
-    return;
-  }
-  if (shell.mode === 'play' && shell.game.keyDown && shell.game.keyDown(k, e.repeat)) { e.preventDefault(); return; }
-  if (KEYMAP[k]) { keys[KEYMAP[k]] = true; if (shell.mode === 'play') e.preventDefault(); return; }
-  if (k === ' ' || k === 'Enter') {
-    if (shell.mode === 'play') { e.preventDefault(); if (k === ' ') keys.fire = true; return; }
-    if (document.activeElement && document.activeElement.tagName === 'BUTTON') return;  // let buttons work
-    if (e.repeat) return;
-    e.preventDefault();
-    if (shell.mode === 'paused') resume();
-    else if (shell.mode === 'start' || shell.mode === 'over') startGame();
-  }
-});
-window.addEventListener('keyup', e => {
-  if (KEYMAP[e.key]) keys[KEYMAP[e.key]] = false;
-  else if (e.key === ' ') keys.fire = false;
-});
-function releaseInput() {
-  pointerId = null;
-  keys.left = keys.right = keys.up = keys.down = keys.fire = false;
-  if (shell.game) shell.game.release();
-}
-
-// auto-pause when the page is hidden or loses focus
-function saveHi() { if (shell.game) store.set(shell.game.hiKey, run.hi); }
-document.addEventListener('visibilitychange', () => { if (document.hidden) { pause(); saveHi(); } syncMusic(); });
-window.addEventListener('pagehide', () => { pause(); saveHi(); });
-window.addEventListener('blur', () => pause());
-
-/* =====================================================================
-   SCREENS + HUD
-   ===================================================================== */
-const hud = {};
-function updateHud() {
-  if (hud.score !== run.score) { elScore.textContent = fmt(run.score); hud.score = run.score; }
-  if (hud.mult !== run.mult) { elCombo.textContent = '×' + run.mult; elCombo.classList.toggle('on', run.mult > 1); hud.mult = run.mult; }
-  if (hud.lives !== run.lives) {
-    elLives.innerHTML = SHIP_SVG.repeat(run.lives);
-    elLives.setAttribute('aria-label', run.lives + (run.lives === 1 ? ' life left' : ' lives left'));
-    hud.lives = run.lives;
-  }
-}
-function syncMuteButtons() {
-  document.querySelectorAll('[data-mute]').forEach(b => {
-    b.textContent = audio.muted ? 'Sound off' : 'Sound on';
-    b.setAttribute('aria-pressed', String(!audio.muted));
-  });
-  document.querySelectorAll('[data-music]').forEach(b => {
-    b.textContent = music.on ? 'Music on' : 'Music off';
-    b.setAttribute('aria-pressed', String(music.on));
-  });
-}
-/* ---------- score tables: top 10 per game, three letters each ----------
-   Stored on this device. To share one table online later, swap list()/add()
-   for calls to a small backend; nothing else in the game needs to change. */
-const KEY_INITIALS = 'quietArcade.initials';
-const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-const scores = {
-  key: g => 'quietArcade.scores.' + g.id,
-  list(g) {
-    let list = [];
-    try {
-      const raw = store.get(this.key(g), null);
-      if (raw === null) {                     // first time: carry over an earlier best score
-        const hi = parseInt(store.get(g.hiKey, '0'), 10) || 0;
-        if (hi > 0) list = [{ n: '---', s: hi, w: 0, d: 0 }];
-        store.set(this.key(g), JSON.stringify(list));   // mark as set up, even when empty
-        return list;
-      }
-      const v = JSON.parse(raw);
-      if (Array.isArray(v)) list = v.filter(e => e && typeof e.n === 'string' && typeof e.s === 'number').slice(0, 10);
-    } catch (e) { /* unreadable: start fresh */ }
-    return list;
-  },
-  qualifies(g, score) {
-    if (score <= 0) return false;
-    const list = this.list(g);
-    return list.length < 10 || score > list[list.length - 1].s;
-  },
-  add(g, entry) {
-    const list = this.list(g);
-    list.push(entry);
-    list.sort((a, b) => b.s - a.s || a.d - b.d);
-    store.set(this.key(g), JSON.stringify(list.slice(0, 10)));
-  }
-};
-let lastEntryD = null;                        // marks the row just saved
-function renderTable(el, list, max, markD) {
-  el.textContent = '';
-  if (!list.length) {
-    const li = document.createElement('li');
-    li.className = 'empty';
-    li.textContent = 'No scores yet. Yours could be the first.';
-    el.appendChild(li);
-    return;
-  }
-  const mi = markD ? list.findIndex(e => e.d === markD) : -1;
-  let rows = list.slice(0, max).map((e, i) => [i, e]);
-  if (mi >= max) rows = rows.slice(0, max - 1).concat([[mi, list[mi]]]);
-  for (const [i, e] of rows) {
-    const li = document.createElement('li');
-    if (i === mi) li.className = 'me';
-    for (const [cls, txt] of [['rank', String(i + 1)], ['who', e.n], ['pts', fmt(e.s)]]) {
-      const sp = document.createElement('span'); sp.className = cls; sp.textContent = txt; li.appendChild(sp);
-    }
-    el.appendChild(li);
-  }
-}
-
-const nameEntry = { letters: ['A', 'A', 'A'], cur: 0 };
-function renderInitials() {
-  document.querySelectorAll('.slot').forEach((el, i) => {
-    el.classList.toggle('on', i === nameEntry.cur);
-    el.querySelector('.letter').textContent = nameEntry.letters[i];
-  });
-}
-function stepLetter(i, d) {
-  const k = CHARS.indexOf(nameEntry.letters[i]);
-  nameEntry.letters[i] = CHARS[(k + d + CHARS.length) % CHARS.length];
-  nameEntry.cur = i;
-  renderInitials();
-  sfx.move();
-}
-function saveName() {
-  if (shell.mode !== 'name') return;
-  const n = nameEntry.letters.join('');
-  store.set(KEY_INITIALS, n);
-  lastEntryD = Date.now();
-  scores.add(shell.game, { n, s: run.score, w: run.wave, d: lastEntryD });
-  shell.mode = 'over';
-  sfx.click();
-  showScreen('over');
-}
-function skipName() {
-  if (shell.mode !== 'name') return;
-  lastEntryD = null;
-  shell.mode = 'over';
-  showScreen('over');
-}
-
-/* ---------- desktop side panel: keys for the current game ---------- */
-const CONTROLS = {
-  drift:    [[['←', '→'], 'Move'], [['Space'], 'Fire'], [['P'], 'Pause']],
-  fracture: [[['←', '→'], 'Turn'], [['↑'], 'Thrust'], [['Space'], 'Fire'], [['P'], 'Pause']],
-  layline:  [[['←', '→'], 'Move'], [['↑', 'Z'], 'Turn'], [['↓'], 'Ease down'], [['Space'], 'Drop'], [['P'], 'Pause']],
-  headway:  [[['←', '↑', '↓', '→'], 'Move'], [['Space'], 'Fire'], [['M'], 'Missile'], [['P'], 'Pause']],
-  switchback: [[['Click'], 'Build or select'], [['1', '5'], 'Build tower 1 to 5'], [['U'], 'Upgrade'], [['Space'], 'Start wave'], [['P'], 'Pause']],
-  snake:    [[['←', '↑', '↓', '→'], 'Turn'], [['W', 'A', 'S', 'D'], 'Turn'], [['P'], 'Pause']]
-};
-const sidePanel = $('sidePanel');
-let sideRoom = false;                          // true when the screen has space beside the game
-function renderSide(g) {
-  $('sideTitle').textContent = g.name;
-  const ul = $('sideKeys');
-  ul.textContent = '';
-  for (const [caps, what] of CONTROLS[g.id] || []) {
-    const li = document.createElement('li'), box = document.createElement('span'), w = document.createElement('span');
-    box.className = 'caps';
-    for (const c of caps) { const k = document.createElement('kbd'); k.className = 'kbd'; k.textContent = c; box.appendChild(k); }
-    w.className = 'what'; w.textContent = what;
-    li.append(box, w); ul.appendChild(li);
-  }
-}
-function syncSide() {
-  const show = sideRoom && shell.mode !== 'hub';
-  sidePanel.classList.toggle('show', show);
-  $('startHint').hidden = show && matchMedia('(hover: hover) and (pointer: fine)').matches;
-}
-
-function bestFor(g) {
-  const stored = parseInt(store.get(g.hiKey, '0'), 10) || 0;
-  return g === shell.game ? Math.max(stored, run.hi) : stored;
-}
-
-function showScreen(name) {
-  const g = shell.game;
-  overlay.hidden = !name;
-  cards.forEach(c => { c.hidden = c.dataset.screen !== name; });
-  app.classList.toggle('is-hub', name === 'hub');
-  const inGame = shell.mode === 'play' || shell.mode === 'paused';
-  pauseBtn.disabled = !inGame;
-  pauseBtn.innerHTML = shell.mode === 'paused' ? PLAY_ICON : PAUSE_ICON;
-  pauseBtn.setAttribute('aria-label', shell.mode === 'paused' ? 'Resume' : 'Pause');
-
-  if (name === 'hub') {
-    for (const id in GAMES) {
-      const best = bestFor(GAMES[id]), top = scores.list(GAMES[id])[0];
-      $('best-' + id).textContent = 'Best ' + fmt(best) + (top && top.s === best && top.n !== '---' ? ' by ' + top.n : '');
-    }
-  }
-  if (name === 'start') {
-    $('startTitle').textContent = g.name;
-    $('startText').textContent = g.howTo;
-    $('startHint').textContent = g.keysHint;
-    renderTable($('startTable'), scores.list(g), 5, null);
-  }
-  elLives.hidden = !!g.noLives;
-  if (name === 'pause') $('pauseStats').innerHTML = `Score <strong>${fmt(run.score)}</strong><br>${g.waveLabel || 'Wave'} <strong>${run.wave}</strong>`;
-  if (name === 'over') {
-    $('overText').textContent = g.overText(run.score > run.hiAtStart && run.score > 0);
-    $('overStats').innerHTML = `Score <strong>${fmt(run.score)}</strong><br>Best <strong>${fmt(run.hi)}</strong>`;
-    renderTable($('overTable'), scores.list(g), 5, lastEntryD);
-  }
-  if (name === 'name') {
-    $('nameScore').innerHTML = `Score <strong>${fmt(run.score)}</strong>`;
-    renderInitials();
-  }
-  if (name !== 'hub') renderSide(g);
-  syncSide();
-  syncMuteButtons();
-  syncThemeButtons();
-  syncMusic();
-  if (name && matchMedia('(pointer: fine)').matches) {
-    const b = overlay.querySelector(`.card[data-screen="${name}"] .primary, .card[data-screen="${name}"] .choice`);
-    if (b) b.focus({ preventScroll: true });
-  }
-}
-
-function resetRunDisplay() {
-  run.score = 0; run.lives = 3; run.wave = 1; run.streak = 0; run.mult = 1;
-  updateHud();
-}
-function selectGame(id) {
-  shell.game = GAMES[id] || DriftDefense;
-  store.set(KEY_LAST, shell.game.id);
-  run.hi = parseInt(store.get(shell.game.hiKey, '0'), 10) || 0;
-  resetRunDisplay();
-  clearFx();
-  shell.game.reset();
-  shell.mode = 'start';
-  showScreen('start');
-}
-function toHub() {
-  saveHi();
-  releaseInput();
-  resetRunDisplay();
-  clearFx();
-  shell.game.reset();
-  shell.mode = 'hub';
-  showScreen('hub');
-}
-function startGame() {
-  releaseInput();
-  resetRunDisplay();
-  run.hiAtStart = run.hi;
-  run.nextLife = shell.game.extraLifeEvery || Infinity;
-  clearFx();
-  shell.game.start();
-  shell.mode = 'play';
-  showScreen(null);
-  sfx.wave();
-}
-function pause() {
-  if (shell.mode !== 'play') return;
-  shell.mode = 'paused';
-  releaseInput();
-  showScreen('pause');
-}
-function resume() {
-  if (shell.mode !== 'paused') return;
-  shell.mode = 'play';
-  showScreen(null);
-  if (document.activeElement) document.activeElement.blur();
-  last = 0;
-}
-function endGame() {
-  releaseInput();
-  lastEntryD = null;
-  const qualifies = scores.qualifies(shell.game, run.score);   // check before the new best is saved
-  saveHi();
-  if (qualifies) {   // made the top 10: ask for three letters
-    shell.mode = 'name';
-    const saved = store.get(KEY_INITIALS, 'AAA').toUpperCase();
-    nameEntry.letters = [0, 1, 2].map(i => CHARS.includes(saved[i]) ? saved[i] : 'A');
-    nameEntry.cur = 0;
-    sfx.extra();
-    showScreen('name');
-  } else {
-    shell.mode = 'over';
-    sfx.over();
-    showScreen('over');
-  }
-}
-
-document.querySelectorAll('[data-game]').forEach(b => b.addEventListener('click', () => selectGame(b.dataset.game)));
-document.querySelectorAll('[data-hub]').forEach(b => b.addEventListener('click', toHub));
-$('playBtn').addEventListener('click', startGame);
-$('againBtn').addEventListener('click', startGame);
-$('resumeBtn').addEventListener('click', resume);
-$('saveNameBtn').addEventListener('click', saveName);
-$('skipNameBtn').addEventListener('click', skipName);
-document.querySelectorAll('.slot').forEach((el, i) => {
-  el.querySelectorAll('.arrow').forEach(b => b.addEventListener('click', () => stepLetter(i, +b.dataset.step)));
-  el.querySelector('.letter').addEventListener('click', () => { nameEntry.cur = i; renderInitials(); });
-});
-pauseBtn.addEventListener('click', () => {
-  if (shell.mode === 'play') pause(); else if (shell.mode === 'paused') resume();
-  pauseBtn.blur();
-});
-document.querySelectorAll('[data-mute]').forEach(b => b.addEventListener('click', () => {
-  audio.unlock();
-  audio.setMuted(!audio.muted);
-  syncMuteButtons();
-  sfx.click();
-}));
-document.querySelectorAll('[data-music]').forEach(b => b.addEventListener('click', () => {
-  audio.unlock();
-  music.on = !music.on;
-  store.set(KEY_MUSIC, music.on ? '1' : '0');
-  syncMuteButtons();
-  syncMusic();
-}));
-document.querySelectorAll('[data-theme-choice]').forEach(b => b.addEventListener('click', () => {
-  applyTheme(b.dataset.themeChoice);
-}));
-
-/* =====================================================================
-   RENDER + LOOP — DPR-sharp canvas, rAF with delta time
-   ===================================================================== */
-function resize() {
-  const r = stage.getBoundingClientRect();
-  view.dpr = Math.min(window.devicePixelRatio || 1, 3);
-  canvas.width = Math.max(1, Math.round(r.width * view.dpr));
-  canvas.height = Math.max(1, Math.round(r.height * view.dpr));
-  view.scale = Math.min(r.width / LW, r.height / LH) || 1;
-  view.ox = (r.width - LW * view.scale) / 2;
-  view.oy = (r.height - LH * view.scale) / 2;
-  stage.style.setProperty('--game-w', LW * view.scale + 'px');
-  sideRoom = view.ox >= 228 + 28 + 16;          // panel width + gap + margin
-  if (shell.game) syncSide();
-}
-
-function render() {
-  const d = view.dpr, k = d * view.scale;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = theme.bg;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  let sx = 0, sy = 0;
-  if (fx.shake > 0 && !reduceMotion) { const m = fx.shake * 12; sx = rand(-m, m); sy = rand(-m, m); }
-  ctx.setTransform(k, 0, 0, k, d * view.ox + sx * k, d * view.oy + sy * k);
-  shell.game.draw();
-  drawFx();
-}
-
-let last = 0;
-function frame(t) {
-  if (!last) last = t;
-  const dt = clamp((t - last) / 1000, 0, 0.05);   // clamp so a hitch can't teleport things
-  last = t;
-  try {
-    music.rate = shell.mode === 'play' ? 1 + Math.min(0.15, 0.025 * (run.wave - 1)) : 1;   // tempo lifts with each wave
-    if (shell.mode === 'play') { updateFx(dt); shell.game.update(dt); }
-    else if (shell.mode !== 'paused') { updateFx(dt); if (shell.game.idle) shell.game.idle(dt); }
-    render();
-  } catch (err) {                              // keep the loop alive; report once
-    if (!frame.failed) { frame.failed = true; console.error(err); }
-  }
-  requestAnimationFrame(frame);
-}
-
-/* ---------- boot ---------- */
-applyTheme('night');   // every visit starts in Night; a theme picked on the picker lasts for the visit
-window.addEventListener('resize', resize);
-window.addEventListener('orientationchange', () => setTimeout(resize, 120));
-if (window.ResizeObserver) new ResizeObserver(resize).observe(stage);
-if (document.fonts && document.fonts.load) document.fonts.load(`600 34px ${FONT_SERIF}`).catch(() => {});
-
-shell.game = GAMES[store.get(KEY_LAST, 'drift')] || DriftDefense;
-run.hi = parseInt(store.get(shell.game.hiKey, '0'), 10) || 0;
-shell.game.reset();
-resetRunDisplay();
-showScreen('hub');
-resize();
-requestAnimationFrame(frame);
-window.__qaBooted = true;                     // the safety net stays quiet from here on
-
-/* ---------- offline support (only where sw.js is served next to this page) ---------- */
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
-}
-})();
-</script>
-</body>
-</html>
