@@ -1,0 +1,126 @@
+/* =====================================================================
+   GAME 7 — PONG (you at the bottom, the computer at the top)
+   ===================================================================== */
+const Pong = (() => {
+  const TOP = 40, BOTTOM = 620, PAD_W = 70, PAD_H = 10, YOU_Y = 590, CPU_Y = 70, BALL_R = 6, WIN = 5, DRAG_GAIN = 1.3;
+  SONGS.pong = { bpm: 108, root: 52, scale: 'dorian', prog: [0, 3, 0, 4], bass: 'x...x...x...x...', kick: 'x.......x.......', hat: '....x.......x...', density: 0.4, seed: 19 };
+  { const s = SONGS.pong, r = seeded(s.seed); s.arp = []; for (let i = 0; i < 32; i++) s.arp.push(r() < (i % 2 === 0 ? s.density : s.density * 0.15) ? Math.floor(r() * 5) : -1); }
+  sfx.paddle = () => audio.tone(440, 0.06, { type: 'triangle', gain: 0.07 });
+  sfx.wall = () => audio.tone(300, 0.04, { type: 'triangle', gain: 0.04 });
+
+  let you, cpu, ball, serveT, serveDown, points, overTimer, drag;
+
+  function newBall(down) {
+    const a = rand(-0.5, 0.5), sp = 240 + 18 * (run.wave - 1);
+    return { x: LW / 2, y: (TOP + BOTTOM) / 2, vx: Math.sin(a) * sp, vy: (down ? 1 : -1) * Math.cos(a) * sp, sp };
+  }
+  function reset() {               // idle scene: the two paddles rallying on their own
+    you = { x: LW / 2 }; cpu = { x: LW / 2, err: 0 };
+    points = { you: 0, cpu: 0 }; ball = newBall(true); serveT = 0; serveDown = true; overTimer = 0; drag = null;
+  }
+  function start() { reset(); ball = null; serveT = 1.2; showBanner('Level ' + run.wave); }
+
+  function predictX() {            // where the ball will cross the computer's line, bouncing off the side walls
+    const t = (ball.y - CPU_Y) / -ball.vy, span = LW - 2 * BALL_R;
+    let x = ball.x - BALL_R + ball.vx * t;
+    x = ((x % (2 * span)) + 2 * span) % (2 * span);
+    return BALL_R + (x > span ? 2 * span - x : x);
+  }
+  function moveCpu(dt) {
+    const speed = Math.min(420, 150 + 25 * (run.wave - 1));
+    const mid = (TOP + BOTTOM) / 2;                // it only reacts once the ball crosses into its half
+    const target = ball && ball.vy < 0 && ball.y < mid + 40 ? predictX() + cpu.err : LW / 2;
+    cpu.x += clamp(target - cpu.x, -speed * dt, speed * dt);
+    cpu.x = clamp(cpu.x, PAD_W / 2, LW - PAD_W / 2);
+  }
+  function bounce(p, down) {       // where it hits the paddle sets the angle; every return is a little faster
+    const off = clamp((ball.x - p.x) / (PAD_W / 2), -1, 1), a = off * 1.0;
+    ball.sp = Math.min(620, ball.sp * 1.04 + 4);
+    ball.vx = Math.sin(a) * ball.sp; ball.vy = (down ? 1 : -1) * Math.cos(a) * ball.sp;
+    ball.y = down ? CPU_Y + PAD_H / 2 + BALL_R : YOU_Y - PAD_H / 2 - BALL_R;
+    if (!down) cpu.err = rand(-1, 1) * Math.max(14, 58 - 5 * (run.wave - 1));   // the computer misjudges, a little less each level
+    sfx.paddle();
+  }
+  function physics(dt, auto) {
+    const n = Math.max(1, Math.ceil(ball.sp * dt / 8)), h = dt / n;
+    for (let i = 0; i < n && ball; i++) {
+      ball.x += ball.vx * h; ball.y += ball.vy * h;
+      if (ball.x < BALL_R) { ball.x = BALL_R; ball.vx = Math.abs(ball.vx); sfx.wall(); }
+      if (ball.x > LW - BALL_R) { ball.x = LW - BALL_R; ball.vx = -Math.abs(ball.vx); sfx.wall(); }
+      if (ball.vy > 0 && ball.y + BALL_R >= YOU_Y - PAD_H / 2 && ball.y - BALL_R <= YOU_Y + PAD_H / 2 && Math.abs(ball.x - you.x) <= PAD_W / 2 + BALL_R) {
+        bounce(you, false);
+        if (!auto) registerHit(10, ball.x, YOU_Y - 14, theme.accent, false, 6);
+      }
+      if (ball.vy < 0 && ball.y - BALL_R <= CPU_Y + PAD_H / 2 && ball.y + BALL_R >= CPU_Y - PAD_H / 2 && Math.abs(ball.x - cpu.x) <= PAD_W / 2 + BALL_R) bounce(cpu, true);
+      if (ball.y < TOP - 20) { if (auto) ball = newBall(true); else pointYou(); }
+      else if (ball && ball.y > BOTTOM + 20) { if (auto) ball = newBall(false); else pointCpu(); }
+    }
+  }
+  function pointYou() {
+    const pts = 100 * run.wave;
+    addScore(pts); updateHud();
+    addFloater(LW / 2, CPU_Y + 30, '+' + pts, theme.accent);
+    points.you++; ball = null; serveT = 1; serveDown = false;
+    sfx.bonus();
+    if (points.you >= WIN) {       // five points: next level, and the computer gets quicker
+      run.wave++; points = { you: 0, cpu: 0 }; serveT = 2;
+      showBanner('Level ' + run.wave, 'The computer gets quicker');
+      sfx.wave();
+    }
+  }
+  function pointCpu() {
+    run.lives = Math.max(0, run.lives - 1);
+    points.cpu++; ball = null; serveT = 1.2; serveDown = true;
+    resetCombo(); shakeScreen(); sfx.playerHit(); updateHud();
+    if (run.lives <= 0) overTimer = 1.2;
+  }
+
+  function idle(dt) {
+    if (reduceMotion) return;
+    you.x += clamp(ball.x - you.x, -200 * dt, 200 * dt);
+    moveCpu(dt);
+    physics(dt, true);
+  }
+  function update(dt) {
+    if (overTimer > 0) { overTimer -= dt; if (overTimer <= 0) endGame(); return; }
+    const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    if (dir) you.x = clamp(you.x + dir * 380 * dt, PAD_W / 2, LW - PAD_W / 2);
+    moveCpu(dt);
+    if (!ball) { serveT -= dt; if (serveT <= 0) ball = newBall(serveDown); return; }
+    physics(dt, false);
+  }
+
+  /* ----- input: drag anywhere to slide your paddle ----- */
+  function pointerDown(lx) { drag = { sx: lx, px: you.x }; }
+  function pointerMove(lx) { if (drag) you.x = clamp(drag.px + (lx - drag.sx) * DRAG_GAIN, PAD_W / 2, LW - PAD_W / 2); }
+  function release() { drag = null; }
+
+  /* ----- draw ----- */
+  function paddle(x, y, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x - PAD_W / 2, y - PAD_H / 2, PAD_W, PAD_H, 5) : ctx.rect(x - PAD_W / 2, y - PAD_H / 2, PAD_W, PAD_H);
+    ctx.fill();
+  }
+  function draw() {
+    const mid = (TOP + BOTTOM) / 2;
+    ctx.fillStyle = theme.border;
+    for (let x = 8; x < LW; x += 24) ctx.fillRect(x, mid - 1, 12, 2);   // dashed centre line
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `600 56px ${FONT_SERIF}`;                                 // the set score, large and faint
+    ctx.fillText(String(points.cpu), LW / 2, mid - 70);
+    ctx.fillText(String(points.you), LW / 2, mid + 70);
+    paddle(cpu.x, CPU_Y, theme.text);
+    paddle(you.x, YOU_Y, theme.accent);
+    if (ball) { ctx.fillStyle = theme.text; ctx.beginPath(); ctx.arc(ball.x, ball.y, BALL_R, 0, Math.PI * 2); ctx.fill(); }
+  }
+
+  return {
+    id: 'pong', name: 'Pong', hiKey: 'pong.highScore',
+    howTo: 'Drag anywhere to slide your paddle at the bottom. Win five points to reach the next level; each ball that gets past you costs a life.',
+    keysHint: 'Keyboard: left and right arrows to move, P to pause.',
+    overText: best => best ? 'A new best score. The computer met its match.' : 'The computer took the last point this time.',
+    bannerY: 300, extraLifeEvery: 0, touchAnywhere: true, waveLabel: 'Level',
+    reset, start, idle, update, draw, pointerDown, pointerMove, release
+  };
+})();
+
