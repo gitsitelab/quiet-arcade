@@ -1,6 +1,6 @@
 # Quiet Arcade
 
-Eight small arcade games for your phone, in one page: Space Invaders, Space Rocks, Tetris, Space Travel, Tower Defence, Snake, Pong and Maze Chase.
+Eight small arcade games for your phone, in one page: Space Defence, Space Rocks, Stacks, Space Travel, Tower Defence, Snake, Pong and Maze Chase.
 
 Play: https://gitsitelab.github.io/quiet-arcade/
 
