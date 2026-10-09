@@ -28,7 +28,7 @@
   window.addEventListener('unhandledrejection', function (e) { show(String(e.reason)); });
 })();
 </script>
-<meta name="description" content="Eight small arcade games for your phone: Space Invaders, Space Rocks, Tetris, Space Travel, Tower Defence, Snake, Pong and Maze Chase.">
+<meta name="description" content="Eight small arcade games for your phone: Space Defence, Space Rocks, Stacks, Space Travel, Tower Defence, Snake, Pong and Maze Chase.">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -215,6 +215,12 @@
   .journey-start { display: flex; flex-direction: column; gap: 6px; }
   .journey-start .seg { margin-top: 0; }
   .journey-start .seg button { height: 34px; font: 500 14px var(--mono); }
+  .journey-reset {
+    align-self: flex-start; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer;
+    font: 500 13px var(--sans); color: var(--muted); text-decoration: underline; text-underline-offset: 3px;
+  }
+  .journey-reset[hidden] { display: none; }
+  .journey-reset.armed { color: var(--accent); }
 
   /* ---------- Three-letter name picker ---------- */
   .initials { display: flex; justify-content: center; gap: 14px; margin: 0 0 22px; }
@@ -298,7 +304,7 @@
               <rect class="ic-text" x="27" y="7" width="8.5" height="8.5"/>
               <path class="ic-accent" d="M20 25 L28 36 L22.5 33.5 L17.5 33.5 L12 36 Z"/>
             </svg>
-            <span class="cname">Space Invaders</span>
+            <span class="cname">Space Defence</span>
             <span class="cdesc">Hold the line against a formation that steps closer.</span>
             <span class="cbest" id="best-drift">Best 0</span>
           </button>
@@ -317,7 +323,7 @@
               <path class="ic-accent" d="M14 3 H21 V10 H28 V17 H14 Z"/>
               <path class="ic-text" d="M4 23 H18 V30 H25 V23 H36 V37 H4 Z"/>
             </svg>
-            <span class="cname">Tetris</span>
+            <span class="cname">Stacks</span>
             <span class="cdesc">Fit falling pieces together and clear full rows.</span>
             <span class="cbest" id="best-layline">Best 0</span>
           </button>
@@ -396,6 +402,7 @@
             <p class="journey-label">Start at chapter</p>
             <div class="seg" id="journeyStart" role="radiogroup" aria-label="Start at chapter"></div>
           </div>
+          <button class="journey-reset" id="journeyReset" type="button" hidden>Reset progress</button>
         </div>
         <ol class="scores" id="startTable" aria-label="Top scores"></ol>
         <button class="primary" id="playBtn" type="button">Play</button>
